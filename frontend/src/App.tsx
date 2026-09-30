@@ -1,0 +1,169 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import ChatInput from './components/ChatInput'
+import Header from './components/Header'
+import MessageBubble, { type ChatMessage } from './components/MessageBubble'
+import { UI_STRINGS, type Language } from './i18n'
+
+const WELCOME = (lang: Language): ChatMessage => ({
+  role: 'assistant',
+  content: UI_STRINGS[lang].welcome,
+})
+
+const SESSION_KEY = 'rk-legal-session-id'
+
+// Set VITE_API_URL at build time to call the backend directly (e.g.
+// VITE_API_URL=https://api.example.com npm run build). Unset = same-origin
+// requests to /api, which is the default behind an nginx reverse proxy.
+const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '')
+
+function getSessionId(): string {
+  let id = localStorage.getItem(SESSION_KEY)
+  if (!id) {
+    id = crypto.randomUUID()
+    localStorage.setItem(SESSION_KEY, id)
+  }
+  return id
+}
+
+function App() {
+  const [language, setLanguage] = useState<Language>('ru')
+  const [messages, setMessages] = useState<ChatMessage[]>([WELCOME('ru')])
+  const [isStreaming, setIsStreaming] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages])
+
+  function handleLanguageChange(lang: Language) {
+    if (lang === language || isStreaming) return
+    setLanguage(lang)
+    setMessages((prev) => {
+      const onlyWelcome = prev.length === 1 && prev[0].role === 'assistant'
+      return onlyWelcome ? [WELCOME(lang)] : prev
+    })
+  }
+
+  const sendMessage = useCallback(
+    async (text: string) => {
+      const history = messages
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m) => ({ role: m.role, content: m.content }))
+
+      setMessages((prev) => [
+        ...prev,
+        { role: 'user', content: text },
+        { role: 'assistant', content: '' },
+      ])
+      setIsStreaming(true)
+
+      try {
+        const res = await fetch(`${API_BASE}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: text,
+            language,
+            history,
+            session_id: getSessionId(),
+          }),
+        })
+
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`
+          try {
+            const body = await res.json()
+            if (body?.detail) detail = body.detail
+          } catch {
+            /* non-JSON error body */
+          }
+          throw new Error(detail)
+        }
+
+        const reader = res.body?.getReader()
+        if (!reader) throw new Error('Streaming is not supported by this browser')
+
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+
+          const events = buffer.split('\n\n')
+          buffer = events.pop() ?? ''
+
+          for (const event of events) {
+            const dataLine = event
+              .split('\n')
+              .find((line) => line.startsWith('data:'))
+            if (!dataLine) continue
+            const payload = dataLine.slice('data:'.length).trim()
+            if (payload === '[DONE]') continue
+
+            try {
+              const parsed = JSON.parse(payload)
+              if (parsed.error) throw new Error(parsed.error)
+              if (parsed.text) {
+                setMessages((prev) => {
+                  const next = [...prev]
+                  const last = next[next.length - 1]
+                  if (last?.role === 'assistant') {
+                    next[next.length - 1] = { ...last, content: last.content + parsed.text }
+                  }
+                  return next
+                })
+              }
+            } catch (err) {
+              if (err instanceof SyntaxError) continue
+              throw err
+            }
+          }
+        }
+      } catch (err) {
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (last?.role === 'assistant' && last.content === '') {
+            next.pop()
+          }
+          return [
+            ...next,
+            {
+              role: 'error',
+              content: `${UI_STRINGS[language].errorTitle}: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ]
+        })
+      } finally {
+        setIsStreaming(false)
+      }
+    },
+    [language, messages],
+  )
+
+  return (
+    <div className="flex h-screen flex-col bg-slate-100 text-slate-800">
+      <Header language={language} onLanguageChange={handleLanguageChange} />
+      <main
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto scroll-smooth bg-white"
+      >
+        <div className="mx-auto flex max-w-4xl flex-col gap-5 px-4 py-6 sm:px-6">
+          {messages.map((message, i) => (
+            <MessageBubble
+              key={i}
+              message={message}
+              streaming={isStreaming && i === messages.length - 1}
+            />
+          ))}
+        </div>
+      </main>
+      <ChatInput language={language} disabled={isStreaming} onSend={sendMessage} />
+    </div>
+  )
+}
+
+export default App

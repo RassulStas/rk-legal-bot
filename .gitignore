@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.venv/
+.venv/
+
+# Secrets — never commit
+backend/.env
+.env
+.env.rtf
+.env.txt
+
+# Runtime data (chat history, audit trail, vector store)
+backend/chat.db
+backend/security_audit.log
+backend/chroma_db/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.*.local
+
+# OS / editor
+.DS_Store
+*.log
