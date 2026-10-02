@@ -3,9 +3,15 @@ import json
 import logging
 import os
 import re
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# Modules here (database, models, rag_service, security_logger) are flat inside
+# backend/. Put this directory on sys.path so Uvicorn boots both as
+# `uvicorn main:app` (cwd=backend/) and `uvicorn backend.main:app` (repo root).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,18 +49,15 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-# Allowed browser origins, comma-separated. Default "*" permits any domain so
-# a public frontend (e.g. on Render) can call a separately-hosted backend.
-# Lock it down per-domain for stricter deployments:
+# Allowed browser origins, comma-separated. Default "*" accepts every origin
+# so a separately-hosted frontend (e.g. on Render) can call this API. Lock it
+# down per-domain for stricter deployments:
 # CORS_ORIGINS=https://legal.example.com,https://www.legal.example.com
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.environ.get("CORS_ORIGINS", "*").split(",")
     if origin.strip()
-]
-# Wildcard origins cannot be combined with credentials (CORS spec) — and the
-# chat API uses no cookies/auth, so credentials stay off for the wildcard case.
-_ALLOW_CREDENTIALS = CORS_ORIGINS != ["*"]
+] or ["*"]
 
 
 @asynccontextmanager
@@ -79,7 +82,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_credentials=_ALLOW_CREDENTIALS,
+    # The API issues no cookies; if cookie auth is ever added, replace the
+    # "*" default with explicit origins — browsers reject "*" on credentialed
+    # responses.
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
