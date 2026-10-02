@@ -334,3 +334,27 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+# Автоматический запуск ETL-парсера при старте сервера
+from parser_service import start_background_parser
+
+@app.on_event("startup")
+async def startup_event():
+    start_background_parser()
+
+from fastapi.responses import StreamingResponse
+from docx_service import generate_legal_document
+
+@app.post("/api/documents/download")
+async def download_document(payload: dict):
+    """Эндпоинт для мгновенной генерации и скачивания Word-файла"""
+    doc_type = payload.get("doc_type", "pretenzia")
+    data = payload.get("data", {})
+    
+    file_stream = generate_legal_document(doc_type, data)
+    
+    return StreamingResponse(
+        file_stream,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename={doc_type}_rk.docx"}
+    )
