@@ -6,3 +6,4 @@ sqlalchemy[asyncio]==2.1.1
 aiosqlite==0.22.1
 chromadb==1.5.9
 sentence-transformers==6.1.0
+python-docx
