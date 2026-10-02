@@ -328,3 +328,10 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+# Автоматический запуск ETL-парсера при старте сервера
+from parser_service import start_background_parser
+
+@app.on_event("startup")
+async def startup_event():
+    start_background_parser()
