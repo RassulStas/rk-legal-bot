@@ -140,7 +140,10 @@ def ingest_documents(force: bool = False) -> int:
 
     collection = _get_collection()
     if not force and collection.metadata and collection.metadata.get("fingerprint") == fingerprint:
-        return collection.count()
+        # A failed ingest leaves the new fingerprint on an emptied collection;
+        # rebuild when documents exist but nothing made it into the store.
+        if not files or collection.count() > 0:
+            return collection.count()
 
     if files:
         chunks: list[str] = []
