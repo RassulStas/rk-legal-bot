@@ -151,7 +151,7 @@ def ingest_documents(force: bool = False) -> int:
             for idx, chunk in enumerate(_chunk_text(text)):
                 chunks.append(chunk)
                 metadatas.append({"source": path.name, "chunk": idx})
-                ids.append(f"{path.stem}:{idx}")
+                ids.append(f"{path.name}:{idx}")
 
         if chunks:
             embeddings = _get_model().encode(chunks, show_progress_bar=False).tolist()

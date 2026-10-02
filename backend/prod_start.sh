@@ -13,8 +13,12 @@ if [ ! -d .venv ]; then
     echo "Virtual environment missing — creating it now..." >&2
     python3 -m venv .venv
     .venv/bin/pip install --upgrade pip
-    .venv/bin/pip install -r requirements.txt
 fi
+
+# Sync dependencies on every boot: a pre-existing venv that lacks a newly
+# added requirement (e.g. python-docx) otherwise crashes uvicorn at import
+# time with ModuleNotFoundError.
+.venv/bin/pip install -r requirements.txt
 
 # shellcheck disable=SC1091
 source .venv/bin/activate
