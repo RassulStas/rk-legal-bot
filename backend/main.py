@@ -3,9 +3,16 @@ import json
 import logging
 import os
 import re
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# Modules here (database, docx_service, models, parser_service, rag_service,
+# security_logger) are flat inside backend/. Put this directory on sys.path so
+# Uvicorn boots both as `uvicorn main:app` (cwd=backend/) and
+# `uvicorn backend.main:app` (repo root).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +22,9 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from database import AsyncSessionLocal, engine, init_db
+from docx_service import generate_legal_document
 from models import ChatMessage, ChatSession
+from parser_service import start_background_parser
 from rag_service import ingest_documents, retrieve_context
 from security_logger import (
     VIOLATION_PII_LEAK_PREVENTED,
@@ -43,23 +52,21 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-# Allowed browser origins, comma-separated. Default "*" permits any domain so
-# a public frontend (e.g. on Render) can call a separately-hosted backend.
-# Lock it down per-domain for stricter deployments:
+# Allowed browser origins, comma-separated. Default "*" accepts every origin
+# so a separately-hosted frontend (e.g. on Render) can call this API. Lock it
+# down per-domain for stricter deployments:
 # CORS_ORIGINS=https://legal.example.com,https://www.legal.example.com
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.environ.get("CORS_ORIGINS", "*").split(",")
     if origin.strip()
-]
-# Wildcard origins cannot be combined with credentials (CORS spec) — and the
-# chat API uses no cookies/auth, so credentials stay off for the wildcard case.
-_ALLOW_CREDENTIALS = CORS_ORIGINS != ["*"]
+] or ["*"]
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_db()
+    start_background_parser()
     try:
         count = await asyncio.to_thread(ingest_documents)
         logger.info("RAG: collection 'rk_laws' ready with %d chunk(s)", count)
@@ -79,13 +86,20 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_credentials=_ALLOW_CREDENTIALS,
+    # The API issues no cookies, and browsers reject the "*" wildcard on
+    # credentialed responses — so credentials stay off while origins are "*".
+    # If cookie auth is ever added, set explicit CORS_ORIGINS and enable this.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "3"))
+
+DOCX_MEDIA_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
 
 RAG_CONTEXT_INSTRUCTIONS = {
     "kk": (
@@ -162,6 +176,12 @@ class ChatRequest(BaseModel):
     history: list[HistoryMessage] = Field(default_factory=list)
     session_id: str | None = Field(default=None, max_length=64)
     user_id: str | None = Field(default=None, max_length=64)
+
+
+class DocumentRequest(BaseModel):
+    # Restricted charset: doc_type lands in the Content-Disposition filename.
+    doc_type: str = Field(default="pretenzia", pattern=r"^[a-z0-9_]{1,32}$")
+    data: dict = Field(default_factory=dict)
 
 
 LEGAL_KEYWORDS = re.compile(
@@ -324,31 +344,18 @@ async def chat(req: ChatRequest) -> StreamingResponse:
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@app.post("/api/documents/download")
+async def download_document(req: DocumentRequest) -> StreamingResponse:
+    """Generate a Word (.docx) document and stream it as a download."""
+    file_stream = generate_legal_document(req.doc_type, req.data)
+    return StreamingResponse(
+        file_stream,
+        media_type=DOCX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{req.doc_type}_rk.docx"'},
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-# Автоматический запуск ETL-парсера при старте сервера
-from parser_service import start_background_parser
-
-@app.on_event("startup")
-async def startup_event():
-    start_background_parser()
-
-from fastapi.responses import StreamingResponse
-from docx_service import generate_legal_document
-
-@app.post("/api/documents/download")
-async def download_document(payload: dict):
-    """Эндпоинт для мгновенной генерации и скачивания Word-файла"""
-    doc_type = payload.get("doc_type", "pretenzia")
-    data = payload.get("data", {})
-    
-    file_stream = generate_legal_document(doc_type, data)
-    
-    return StreamingResponse(
-        file_stream,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f"attachment; filename={doc_type}_rk.docx"}
-    )
