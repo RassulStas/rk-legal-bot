@@ -12,7 +12,9 @@ from pathlib import Path
 # security_logger) are flat inside backend/. Put this directory on sys.path so
 # Uvicorn boots both as `uvicorn main:app` (cwd=backend/) and
 # `uvicorn backend.main:app` (repo root).
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
