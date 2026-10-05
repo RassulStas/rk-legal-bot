@@ -18,6 +18,10 @@ engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     future=True,
+    # Validate pooled connections on checkout: a client disconnect cancels the
+    # aiosqlite terminate cleanup, leaving a dead connection in the pool that
+    # would otherwise fail the next request with "no active connection".
+    pool_pre_ping=True,
     # SQLite needs check_same_thread=False in async mode; harmless for PostgreSQL.
     connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
 )
