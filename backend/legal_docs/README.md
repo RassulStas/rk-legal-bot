@@ -12,18 +12,28 @@ Adding, editing, or removing files triggers a full re-ingest on the next
 restart (detection is based on file name, size, and mtime). The vector store
 lives in `backend/chroma_db/`.
 
-Current contents:
-- `trudovoy_kodeks_rk.md` — full text of the Labor Code of the Republic of
-  Kazakhstan (23.11.2015 № 414-V ЗРК, consolidated version as of the source
-  capture date).
-- `grazhdanskiy_kodeks_rk.md` — abridged excerpts from the Civil Code (special
-  part). Replace with the full text when a machine-readable current version is
-  available.
+Current contents (all full consolidated official texts, Russian language):
+- `trudovoy_kodeks_rk.md` — Labor Code of the Republic of Kazakhstan
+  (23.11.2015 № 414-V ЗРК).
+- `grazhdanskiy_kodeks_rk_obshaya_chast.md` — Civil Code, General Part
+  (27.12.1994 № 268-XIII, in force since 01.03.1995).
+- `grazhdanskiy_kodeks_rk_osobennaya_chast.md` — Civil Code, Special Part
+  (01.07.1999 № 409).
+- `nalogoviy_kodeks_rk.md` — Tax Code of the Republic of Kazakhstan
+  (17.07.2025 № 214-VIII, in force since 01.01.2026).
 
-Note: the Tax Code was deliberately removed — the 2017 code (№ 120-VI) was
-repealed by the Tax Code of 18.07.2025 № 214-VIII effective 01.01.2026, and no
-text source for the current code is available to this pipeline yet. Do not
-re-add the repealed text: the bot must not cite outdated tax rates.
+Note: the previous tax document was removed earlier because it contained the
+2017 code (№ 120-VI), repealed by the Tax Code of 18.07.2025 № 214-VIII
+effective 01.01.2026. The current file above is the NEW code — do not replace
+it with the repealed 2017 text: the bot must not cite outdated tax rates.
+
+The texts are pre-cleaned before ingestion: editorial-system paragraphs
+(«Сноска.» amendment-history footnotes, ИЗПИ/РЦПИ service notes, «Содержание»
+TOC preambles) are stripped. The consolidated article text already incorporates
+those amendments, and the footnotes otherwise dilute chunk embeddings — a
+preamble-heavy first chunk once pushed the definitional article of ГК
+ст. 406 (договор купли-продажи) to rank ~2800 in retrieval. Re-apply the same
+cleaning to any future documents before adding them here.
 
 Tuning via `backend/.env`:
 - `RAG_EMBEDDING_MODEL` — any SentenceTransformers model name

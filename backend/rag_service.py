@@ -105,11 +105,77 @@ def _fingerprint(files: list[Path]) -> str:
     return hashlib.sha256(repr(parts).encode("utf-8")).hexdigest()
 
 
+ARTICLE_START = re.compile(r"^(##\s*Статья\s+\d+|\*\*Статья\s+\d+\b)")
+
+_TABLE_ROW = re.compile(r"^\s*\|(.+)\|\s*$", re.MULTILINE)
+
+
+def _linearize_tables(text: str) -> str:
+    """Turn markdown table rows into prose so they embed meaningfully.
+
+    Pipe tables (e.g. tax rate scales) embed as noise, which buried the
+    ИПН rate article of НК ст. 363 below top-20 despite a topical query.
+    """
+
+    def repl(match: re.Match) -> str:
+        cells = [c.strip() for c in match.group(1).split("|")]
+        if all(set(c) <= set("-: ") for c in cells):
+            return ""  # markdown separator row
+        return " — ".join(c for c in cells if c)
+
+    return _TABLE_ROW.sub(repl, text)
+
+
+# When a question explicitly names a code, restrict retrieval to that code's
+# documents so chunks from other codes don't dilute the context. Each entry:
+# (keywords, source filenames). Checked in order; first match wins.
+_CODE_FILTERS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+    (("налогов", "ндс", "корпоративн", "социальн"), ("nalogoviy_kodeks_rk.md",)),
+    (
+        ("гражданск",),
+        (
+            "grazhdanskiy_kodeks_rk_obshaya_chast.md",
+            "grazhdanskiy_kodeks_rk_osobennaya_chast.md",
+        ),
+    ),
+    (("трудов", "заработн"), ("trudovoy_kodeks_rk.md",)),
+]
+
+
+def _code_filter(query: str) -> dict | None:
+    q = query.lower()
+    for keywords, sources in _CODE_FILTERS:
+        if any(k in q for k in keywords):
+            return {"source": {"$in": list(sources)}}
+    return None
+
+
+# Geographic/code/year filler in user questions ("в Казахстане", "2026",
+# "по Налоговому кодексу РК") drags embeddings away from definitional
+# articles — a bare "Ставки индивидуального подоходного налога" ranks
+# НК ст. 363 at #2 where the full question ranks it #86. We embed both the
+# raw and the stripped query and fuse the results.
+_FILLER = re.compile(
+    r"(?i)\b(20\d\d|рк|кодекс\w*|казахстан\w*|налого\w*|гражданск\w*|трудов\w*)\b"
+)
+
+
+def _fused_query_texts(query: str) -> list[str]:
+    stripped = _FILLER.sub(" ", query)
+    stripped = " ".join(stripped.split())
+    return list(dict.fromkeys([query, stripped]))
+
+
 def _chunk_text(text: str) -> list[str]:
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", _linearize_tables(text)) if p.strip()]
     chunks: list[str] = []
     current = ""
     for para in paragraphs:
+        # Flush at article boundaries so each chunk carries its article number
+        # and definitional articles are not diluted by neighbouring ones.
+        if current and ARTICLE_START.match(para):
+            chunks.append(current)
+            current = ""
         candidate = f"{current}\n\n{para}" if current else para
         if len(candidate) <= CHUNK_SIZE:
             current = candidate
@@ -159,7 +225,16 @@ def ingest_documents(force: bool = False) -> int:
         if chunks:
             embeddings = _get_model().encode(chunks, show_progress_bar=False).tolist()
             collection = _recreate_collection(fingerprint)
-            collection.add(ids=ids, documents=chunks, metadatas=metadatas, embeddings=embeddings)
+            # Chroma caps a single add() well below our chunk count — batch.
+            batch_size = 500
+            for start in range(0, len(ids), batch_size):
+                end = start + batch_size
+                collection.add(
+                    ids=ids[start:end],
+                    documents=chunks[start:end],
+                    metadatas=metadatas[start:end],
+                    embeddings=embeddings[start:end],
+                )
             logger.info(
                 "RAG: ingested %d chunks from %d document(s) into '%s'",
                 len(chunks),
@@ -183,17 +258,43 @@ def retrieve_context(query: str, top_k: int = 3) -> str | None:
     if collection.count() == 0 or not query.strip():
         return None
 
-    query_embedding = _get_model().encode(query, show_progress_bar=False).tolist()
-    result = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(top_k, collection.count()),
-        include=["documents", "metadatas", "distances"],
-    )
+    n_results = min(top_k, collection.count())
+    where = _code_filter(query)
 
+    def _query(texts: list[str]) -> dict:
+        embeddings = _get_model().encode(texts, show_progress_bar=False).tolist()
+        res = collection.query(
+            query_embeddings=embeddings,
+            n_results=n_results,
+            where=where,
+            include=["documents", "metadatas", "distances"],
+        )
+        if where and (not res["documents"] or not res["documents"][0]):
+            # Named code not yet ingested — fall back to the full collection.
+            res = collection.query(
+                query_embeddings=embeddings,
+                n_results=n_results,
+                include=["documents", "metadatas", "distances"],
+            )
+        return res
+
+    # Fuse raw and filler-stripped embeddings, best distance per chunk id.
+    texts = [t for t in _fused_query_texts(query) if t.strip()]
+    res = _query(texts)
+    fused: dict[str, tuple[str, dict, float]] = {}
+    for qi in range(len(texts)):
+        for id_, doc, meta, dist in zip(
+            res["ids"][qi],
+            res["documents"][qi],
+            res["metadatas"][qi],
+            res["distances"][qi],
+        ):
+            if id_ not in fused or dist < fused[id_][2]:
+                fused[id_] = (doc, meta, dist)
+
+    ranked = sorted(fused.values(), key=lambda item: item[2])[:top_k]
     parts: list[str] = []
-    for doc, meta, dist in zip(
-        result["documents"][0], result["metadatas"][0], result["distances"][0]
-    ):
+    for doc, meta, dist in ranked:
         if dist > MAX_DISTANCE:
             continue
         source = meta.get("source", "unknown")
