@@ -163,7 +163,31 @@ _FILLER = re.compile(
 def _fused_query_texts(query: str) -> list[str]:
     stripped = _FILLER.sub(" ", query)
     stripped = " ".join(stripped.split())
-    return list(dict.fromkeys([query, stripped]))
+    texts = [query, stripped]
+    # The Civil Code regulates lease largely through "имущественный наём"
+    # norms (ГК ст. 540–564) while users ask about "аренда" — bridge the
+    # lexical gap so the наём article surface. ГК ст. 556 otherwise ranks
+    # below top-20 for "расторжение договора аренды".
+    if "аренд" in query.lower() and "найм" not in query.lower():
+        texts.append(re.sub(r"(?i)аренд\w*", "аренды (имущественного найма)", query, count=1))
+        if stripped != query:
+            texts.append(re.sub(r"(?i)аренд\w*", "аренды (имущественного найма)", stripped, count=1))
+    # Termination of lease is regulated under the doctrinal title "по
+    # требованию одной из сторон" (ГК ст. 556) — users ask "расторгнуть
+    # аренду" without that phrase, and the article otherwise ranks below
+    # the fusion cutoff against repeated "аренда предприятия" chunks.
+    # A compact canonical phrase outperforms appending words to the noisy
+    # full-sentence query (0.16 vs 0.30 cosine distance to ст. 556).
+    if re.search(r"(?i)расторг|прекрат", query) and ("аренд" in query.lower() or "найм" in query.lower()):
+        texts.append("расторжение договора имущественного найма по требованию одной из сторон")
+    # "ИПН" alone does not bridge to "индивидуальный подоходный налог" in
+    # the embedding space (НК ст. 363 falls out of the candidate pool);
+    # the spelled-out form ranks it #1.
+    if re.search(r"(?i)\bипн\b", query):
+        texts.append(re.sub(r"(?i)\bипн\b", "индивидуального подоходного налога", query))
+        if stripped != query:
+            texts.append(re.sub(r"(?i)\bипн\b", "индивидуального подоходного налога", stripped))
+    return list(dict.fromkeys(t for t in texts if t.strip()))
 
 
 def _chunk_text(text: str) -> list[str]:
@@ -258,7 +282,7 @@ def retrieve_context(query: str, top_k: int = 3) -> str | None:
     if collection.count() == 0 or not query.strip():
         return None
 
-    n_results = min(top_k, collection.count())
+    n_results = min(max(top_k * 5, 25), collection.count())
     where = _code_filter(query)
 
     def _query(texts: list[str]) -> dict:
