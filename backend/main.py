@@ -305,6 +305,12 @@ CAPACITY_ERROR_MARKERS = (
     "timeout",
 )
 
+# Free-tier overload blips (503 "high demand") usually clear within seconds —
+# retry briefly instead of falling back, but only while nothing has been
+# streamed yet: a mid-stream retry would duplicate output.
+CAPACITY_RETRIES = 2
+CAPACITY_RETRY_BACKOFF_SECONDS = (2.0, 5.0)
+
 
 def _is_capacity_error(exc: BaseException) -> bool:
     """True when a Gemini failure is transient overload rather than a real fault."""
@@ -402,32 +408,51 @@ async def chat(req: ChatRequest) -> StreamingResponse:
         collected: list[str] = []
         failed = False
         try:
-            stream = await client.aio.models.generate_content_stream(
-                model=GEMINI_MODEL,
-                contents=contents,
-                config=types.GenerateContentConfig(system_instruction=system_prompt),
-            )
-            async for chunk in stream:
-                text = _chunk_text(chunk)
-                if text:
-                    collected.append(text)
-                    yield f"data: {json.dumps({'text': text}, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-        except Exception as exc:
-            failed = True
-            capacity = _is_capacity_error(exc)
-            if capacity:
-                logger.warning(
-                    "Gemini stream unavailable for session %s (%s): %s",
-                    session_id,
-                    type(exc).__name__,
-                    exc,
-                )
-            else:
-                logger.exception("Gemini stream failed for session %s", session_id)
-            fallback = CAPACITY_FALLBACK if capacity else UNEXPECTED_FALLBACK
-            yield f"data: {json.dumps({'text': fallback.get(req.language, fallback['ru'])}, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+            for attempt in range(1 + CAPACITY_RETRIES):
+                collected = []
+                try:
+                    stream = await client.aio.models.generate_content_stream(
+                        model=GEMINI_MODEL,
+                        contents=contents,
+                        config=types.GenerateContentConfig(system_instruction=system_prompt),
+                    )
+                    async for chunk in stream:
+                        text = _chunk_text(chunk)
+                        if text:
+                            collected.append(text)
+                            yield f"data: {json.dumps({'text': text}, ensure_ascii=False)}\n\n"
+                    failed = False
+                    yield "data: [DONE]\n\n"
+                    break
+                except Exception as exc:
+                    failed = True
+                    capacity = _is_capacity_error(exc)
+                    if capacity and not collected and attempt < CAPACITY_RETRIES:
+                        delay = CAPACITY_RETRY_BACKOFF_SECONDS[attempt]
+                        logger.warning(
+                            "Gemini capacity error, attempt %d/%d, session %s (%s) — retrying in %.0fs",
+                            attempt + 1,
+                            1 + CAPACITY_RETRIES,
+                            session_id,
+                            type(exc).__name__,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    if capacity:
+                        logger.warning(
+                            "Gemini stream unavailable for session %s after %d attempt(s) (%s): %s",
+                            session_id,
+                            attempt + 1,
+                            type(exc).__name__,
+                            exc,
+                        )
+                    else:
+                        logger.exception("Gemini stream failed for session %s", session_id)
+                    fallback = CAPACITY_FALLBACK if capacity else UNEXPECTED_FALLBACK
+                    yield f"data: {json.dumps({'text': fallback.get(req.language, fallback['ru'])}, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    break
         finally:
             # Persist the assistant turn even on failure (partial content included)
             # so no streamed data is ever lost.
@@ -678,30 +703,47 @@ async def analyze_contract(
 
     analysis = ""
     failed = False
-    try:
-        client = genai.Client(api_key=api_key)
-        response = await client.aio.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=f"ТЕКСТ ДОГОВОРА (файл «{filename}»):\n\n{analysis_input}",
-            config=types.GenerateContentConfig(system_instruction=system_prompt),
-        )
-        analysis = (response.text or "").strip()
-        if not analysis:
-            raise RuntimeError("empty model response")
-    except Exception as exc:
-        failed = True
-        capacity = _is_capacity_error(exc)
-        if capacity:
-            logger.warning(
-                "Gemini contract analysis unavailable for session %s (%s): %s",
-                session_id,
-                type(exc).__name__,
-                exc,
+    client = genai.Client(api_key=api_key)
+    for attempt in range(1 + CAPACITY_RETRIES):
+        try:
+            response = await client.aio.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=f"ТЕКСТ ДОГОВОРА (файл «{filename}»):\n\n{analysis_input}",
+                config=types.GenerateContentConfig(system_instruction=system_prompt),
             )
-        else:
-            logger.exception("Gemini contract analysis failed for session %s", session_id)
-        fallback = CAPACITY_FALLBACK if capacity else UNEXPECTED_FALLBACK
-        analysis = fallback["ru"]
+            analysis = (response.text or "").strip()
+            if not analysis:
+                raise RuntimeError("empty model response")
+            failed = False
+            break
+        except Exception as exc:
+            failed = True
+            capacity = _is_capacity_error(exc)
+            if capacity and attempt < CAPACITY_RETRIES:
+                delay = CAPACITY_RETRY_BACKOFF_SECONDS[attempt]
+                logger.warning(
+                    "Gemini contract analysis capacity error, attempt %d/%d, session %s (%s) — retrying in %.0fs",
+                    attempt + 1,
+                    1 + CAPACITY_RETRIES,
+                    session_id,
+                    type(exc).__name__,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            if capacity:
+                logger.warning(
+                    "Gemini contract analysis unavailable for session %s after %d attempt(s) (%s): %s",
+                    session_id,
+                    attempt + 1,
+                    type(exc).__name__,
+                    exc,
+                )
+            else:
+                logger.exception("Gemini contract analysis failed for session %s", session_id)
+            fallback = CAPACITY_FALLBACK if capacity else UNEXPECTED_FALLBACK
+            analysis = fallback["ru"]
+            break
 
     async with AsyncSessionLocal() as db:
         await _ensure_session(db, session_id, None)
