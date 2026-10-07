@@ -199,7 +199,8 @@ def _fused_query_texts(query: str) -> list[str]:
     # КоАП ст. 608's heading phrase is what the embedding matches; colloquial
     # drunk-driving questions ("что будет если сесть за руль пьяным") rank
     # the inclusion article 619-1 above it. The canonical phrase ranks 608 #1.
-    if re.search(r"(?i)опьянени|пьян\w*\b", query) and re.search(
+    # "нетрезв" is a common sober-negation phrasing that matches neither root.
+    if re.search(r"(?i)опьянени|пьян\w*\b|нетрезв", query) and re.search(
         r"(?i)управлени|водител|транспорт|рул\w*", query
     ):
         texts.append("управление транспортным средством в состоянии опьянения")
