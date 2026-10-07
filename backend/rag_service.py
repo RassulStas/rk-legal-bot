@@ -126,36 +126,132 @@ def _linearize_tables(text: str) -> str:
     return _TABLE_ROW.sub(repl, text)
 
 
-# When a question explicitly names a code, restrict retrieval to that code's
-# documents so chunks from other codes don't dilute the context. Each entry:
-# (keywords, source filenames). Checked in order; first match wins.
-_CODE_FILTERS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+# When a question can name several codes at once ("убытки по ГК, претензия
+# по ГПК, вычет по НК"). Retrieval detects every named code group and spends
+# a quota of top_k on each, instead of locking onto whichever code keyword
+# matched first — that lock starved the other sub-questions of context and
+# the model correctly answered with disclaimers. Each entry:
+# (keywords, source filenames).
+_GPK_SOURCE = "grazhdanskiy_protsessualnyy_kodeks_rk.md"
+_GK_SOURCES = (
+    "grazhdanskiy_kodeks_rk_obshaya_chast.md",
+    "grazhdanskiy_kodeks_rk_osobennaya_chast.md",
+)
+
+_CODE_GROUPS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
     # "налог" (not just "налогов") so e.g. "ставка земельного налога" lands
     # in the Tax Code instead of being swallowed by the земельн filter.
-    (("налог", "ндс", "корпоративн", "социальн"), ("nalogoviy_kodeks_rk.md",)),
+    (("налог", "ндс", "ипн", "кпн", "корпоративн", "социальн"), ("nalogoviy_kodeks_rk.md",)),
     (("предпринимат",), ("predprinimatelskiy_kodeks_rk.md",)),
     (("административн", "коап"), ("kodeks_administrativnykh_pravonarusheniy_rk.md",)),
     (("земельн",), ("zemelniy_kodeks_rk.md",)),
-    # Must precede the гражданск entry: "гражданский процессуальный"
-    # queries belong to ГПК, not the substantive Civil Code.
-    (("процессуальн",), ("grazhdanskiy_protsessualnyy_kodeks_rk.md",)),
-    (
-        ("гражданск",),
-        (
-            "grazhdanskiy_kodeks_rk_obshaya_chast.md",
-            "grazhdanskiy_kodeks_rk_osobennaya_chast.md",
-        ),
-    ),
-    (("трудов", "заработн"), ("trudovoy_kodeks_rk.md",)),
+    # "ГПК"/"претензия"/"досудебный" mark civil-procedure sub-questions even
+    # when the full name is never spelled out.
+    (("процессуальн", "гпк", "досудебн", "претенз"), (_GPK_SOURCE,)),
+    (("гражданск",), _GK_SOURCES),
+    (("трудов", "заработн", "зарплат", "работодател"), ("trudovoy_kodeks_rk.md",)),
 ]
 
+# "гражданско-процессуальный кодекс" mentions ГПК only: test the Civil Code
+# keyword against the query with ГПК names removed, else that shared root
+# drags the substantive ГК group in alongside ГПК.
+_GPK_NAME_RE = re.compile(r"(?i)гражданск\w*[\s-]*процессуальн\w*|\bгпк\b")
 
-def _code_filter(query: str) -> dict | None:
+# Procedural sub-questions ("в какой суд обращаться", "сроки подачи иска")
+# inside otherwise substantive queries.
+_PROCEDURAL_SUBSTRINGS = ("суд", "жалоб", "процессуальн", "обращен", "подач")
+# \bиск(а|у|…)?\b matches иск/иска/иску/иске while \bисков\w* covers
+# исковой/искового; both stay clear of "риск"/"исключение".
+_PROCEDURAL_RE = re.compile(r"\bисков\w*|\bиск(?:а|у|ом|е|и|ам|ами|ах|ов)?\b")
+
+
+def _sounds_procedural(query: str) -> bool:
     q = query.lower()
-    for keywords, sources in _CODE_FILTERS:
-        if any(k in q for k in keywords):
-            return {"source": {"$in": list(sources)}}
-    return None
+    return any(s in q for s in _PROCEDURAL_SUBSTRINGS) or bool(_PROCEDURAL_RE.search(q))
+
+
+def _matched_groups(query: str) -> list[tuple[str, ...]]:
+    """All code groups the query names — not just the first keyword hit."""
+    q = query.lower()
+    q_no_gpk = _GPK_NAME_RE.sub(" ", q)
+    groups: list[tuple[str, ...]] = []
+    for keywords, sources in _CODE_GROUPS:
+        haystack = q_no_gpk if sources == _GK_SOURCES else q
+        if any(k in haystack for k in keywords) and sources not in groups:
+            groups.append(sources)
+    # A substantive query that also sounds procedural ("задержка зарплаты
+    # ... в какой суд обращаться") must not lose ГПК candidates.
+    if groups and _sounds_procedural(q) and (_GPK_SOURCE,) not in groups:
+        groups.append((_GPK_SOURCE,))
+    return groups
+
+
+_NUMBERED_SPLIT = re.compile(r"(?m)^\s*\d+\s*[.)]\s+")
+
+
+def _numbered_parts(query: str) -> list[str]:
+    """Sub-questions of a numbered list ("1. ... 2. ..."). Each part usually
+    concerns its own code, and retrieving with the part text — not the whole
+    multi-part question — ranks its articles far higher."""
+    fragments = _NUMBERED_SPLIT.split(query)
+    if len(fragments) < 3:
+        return []
+    return [" ".join(f.split()) for f in fragments[1:] if f.strip()]
+
+
+# Canonical heading-phrase bridges per code group: a compact canonical
+# phrase outperforms appending words to the noisy full-sentence query
+# (e.g. "возмещение убытков и упущенной выгоды ..." holds ГК ст. 350/351
+# at ~0.23 distance where the raw question leaves them below top-20).
+def _group_bridges(query: str, sources: tuple[str, ...]) -> list[str]:
+    q = query.lower()
+    bridges: list[str] = []
+    if sources == _GK_SOURCES:
+        if re.search(r"убытк|упущенн", q):
+            bridges.append("возмещение убытков и упущенной выгоды при нарушении обязательства")
+        if re.search(r"неустойк|пени|просроч", q):
+            bridges.append("неустойка за неправомерное пользование чужими деньгами")
+        if re.search(r"взыск|защит", q):
+            bridges.append("возмещение убытков взыскание неустойки защита гражданских прав")
+    elif sources == (_GPK_SOURCE,):
+        if re.search(r"досудебн|претенз", q):
+            bridges.append("судебная защита прав и охраняемых законом интересов")
+            bridges.append("возвращение искового заявления несоблюдение досудебного порядка урегулирования спора")
+        if _sounds_procedural(q):
+            bridges.append("подсудность гражданских дел и порядок подачи искового заявления в суд, сроки обращения за судебной защитой")
+    elif sources == ("nalogoviy_kodeks_rk.md",):
+        # "КПН" alone does not bridge to "корпоративный подоходный налог" in
+        # the embedding space, mirroring the ИПН case below.
+        if re.search(r"(?i)\bкпн\b", query):
+            bridges.append(re.sub(r"(?i)\bкпн\b", "корпоративного подоходного налога", query))
+        if re.search(r"убытк", q) and re.search(r"кпн|подоходн|уменьшен|вычет|вычесть", q):
+            bridges.append("уменьшение налогооблагаемого дохода вычет понесенных убытков")
+            bridges.append("учет убытков при исчислении корпоративного подоходного налога")
+    return bridges
+
+
+def _group_query_texts(query: str, sources: tuple[str, ...]) -> list[str]:
+    texts = _fused_query_texts(query)
+    # Strip the other codes' vocabulary so the embedding leans toward this
+    # group's articles instead of being dragged by e.g. tax wording.
+    other = [
+        k
+        for keywords, group_sources in _CODE_GROUPS
+        if group_sources != sources
+        for k in keywords
+        # ГПК text legitimately speaks of "гражданские дела".
+        if not (sources == (_GPK_SOURCE,) and k == "гражданск")
+    ]
+    stripped = " ".join(
+        re.sub("|".join(map(re.escape, other)), " ", query, flags=re.IGNORECASE).split()
+    )
+    if stripped and stripped.lower() not in {t.lower() for t in texts}:
+        texts.append(stripped)
+    for part in _numbered_parts(query):
+        if sources in _matched_groups(part):
+            texts.append(part)
+    texts.extend(_group_bridges(query, sources))
+    return list(dict.fromkeys(t for t in texts if t.strip()))
 
 
 # Geographic/code/year filler in user questions ("в Казахстане", "2026",
@@ -321,21 +417,22 @@ def ingest_documents(force: bool = False) -> int:
 def retrieve_context(query: str, top_k: int = 3) -> str | None:
     """Return the top_k most relevant legal chunks for a chat message.
 
-    Returns None if the store is empty or nothing passes the relevance
-    threshold, letting the caller fall back to a context-free prompt.
+    Multi-code questions retrieve a quota of chunks per named code group so
+    every sub-question carries statutory context. Returns None if the store
+    is empty or nothing passes the relevance threshold, letting the caller
+    fall back to a context-free prompt.
     """
     collection = _get_collection()
     if collection.count() == 0 or not query.strip():
         return None
 
-    n_results = min(max(top_k * 5, 25), collection.count())
-    where = _code_filter(query)
-
-    def _query(texts: list[str]) -> dict:
+    def _fuse(texts: list[str], where: dict | None, n_results: int) -> list[tuple[str, dict, float]]:
+        # Fuse all query variants (raw, stripped, bridges), best distance
+        # per chunk id.
         embeddings = _get_model().encode(texts, show_progress_bar=False).tolist()
         res = collection.query(
             query_embeddings=embeddings,
-            n_results=n_results,
+            n_results=min(n_results, collection.count()),
             where=where,
             include=["documents", "metadatas", "distances"],
         )
@@ -343,30 +440,62 @@ def retrieve_context(query: str, top_k: int = 3) -> str | None:
             # Named code not yet ingested — fall back to the full collection.
             res = collection.query(
                 query_embeddings=embeddings,
-                n_results=n_results,
+                n_results=min(n_results, collection.count()),
                 include=["documents", "metadatas", "distances"],
             )
-        return res
+        fused: dict[str, tuple[str, dict, float]] = {}
+        for qi in range(len(texts)):
+            for id_, doc, meta, dist in zip(
+                res["ids"][qi],
+                res["documents"][qi],
+                res["metadatas"][qi],
+                res["distances"][qi],
+            ):
+                if id_ not in fused or dist < fused[id_][2]:
+                    fused[id_] = (doc, meta, dist)
+        ranked = sorted(fused.values(), key=lambda item: item[2])
+        # Cap two chunks per article so one repetitive article cannot eat
+        # the whole quota (ГПК ст. 429's boilerplate otherwise appears 3×).
+        per_article: dict[str, int] = {}
+        diverse: list[tuple[str, dict, float]] = []
+        for doc, meta, dist in ranked:
+            article = doc.split("\n", 1)[0]
+            per_article[article] = per_article.get(article, 0) + 1
+            if per_article[article] <= 2:
+                diverse.append((doc, meta, dist))
+        return diverse
 
-    # Fuse raw and filler-stripped embeddings, best distance per chunk id.
-    texts = [t for t in _fused_query_texts(query) if t.strip()]
-    res = _query(texts)
-    fused: dict[str, tuple[str, dict, float]] = {}
-    for qi in range(len(texts)):
-        for id_, doc, meta, dist in zip(
-            res["ids"][qi],
-            res["documents"][qi],
-            res["metadatas"][qi],
-            res["distances"][qi],
-        ):
-            if id_ not in fused or dist < fused[id_][2]:
-                fused[id_] = (doc, meta, dist)
+    groups = _matched_groups(query)
+    if not groups:
+        ranked = [
+            item
+            for item in _fuse(_fused_query_texts(query), None, max(top_k * 5, 25))
+            if item[2] <= MAX_DISTANCE
+        ][:top_k]
+    else:
+        group_ranked: list[list[tuple[str, dict, float]]] = []
+        for sources in groups:
+            texts = _group_query_texts(query, sources)
+            ranked_group = [
+                item
+                for item in _fuse(texts, {"source": {"$in": list(sources)}}, max(top_k * 4, 15))
+                if item[2] <= MAX_DISTANCE
+            ]
+            group_ranked.append(ranked_group)
+        quota, remainder = divmod(top_k, len(groups))
+        taken: list[tuple[str, dict, float]] = []
+        for gi, ranked_group in enumerate(group_ranked):
+            taken.extend(ranked_group[: quota + (1 if gi < remainder else 0)])
+        # A weak or empty group spills its unused quota to the other groups.
+        if len(taken) < top_k:
+            counts = [min(quota + (1 if gi < remainder else 0), len(rg)) for gi, rg in enumerate(group_ranked)]
+            rest = [item for gi, rg in enumerate(group_ranked) for item in rg[counts[gi] :]]
+            rest.sort(key=lambda item: item[2])
+            taken.extend(rest[: top_k - len(taken)])
+        ranked = sorted(taken, key=lambda item: item[2])[:top_k]
 
-    ranked = sorted(fused.values(), key=lambda item: item[2])[:top_k]
     parts: list[str] = []
     for doc, meta, dist in ranked:
-        if dist > MAX_DISTANCE:
-            continue
         source = meta.get("source", "unknown")
         parts.append(f"[Источник: {source}]\n{doc}")
 
