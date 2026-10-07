@@ -227,6 +227,74 @@ def _chunk_text(chunk) -> str | None:
         return None
 
 
+# Gemini overload (503 "high demand", 429 quota) is a normal operating state on
+# the free tier. Raw SDK payloads must never reach the browser: users get a
+# polite retry prompt streamed as ordinary assistant text instead.
+CAPACITY_FALLBACK = {
+    "kk": (
+        "SmartLawyer желісі қазіргі уақытта көп сұранысты өңдеуде. 5-10 секунд күтіп, "
+        "сұрағыңызды қайта жіберіңіз. Біз сіз үшін Қазақстан Республикасы кодекстерінің "
+        "қажетті баптарын іздестіріп жатырмыз."
+    ),
+    "ru": (
+        "Сеть SmartLawyer обрабатывает большой объем запросов. Пожалуйста, подождите 5-10 "
+        "секунд и отправьте ваш вопрос повторно. Мы уже извлекаем нужные статьи кодексов РК "
+        "для вас."
+    ),
+}
+
+UNEXPECTED_FALLBACK = {
+    "kk": "Жауапты дайындау мүмкін болмады. Сұрағыңызды қайта жіберіңіз.",
+    "ru": "Не удалось подготовить ответ. Пожалуйста, отправьте ваш вопрос повторно.",
+}
+
+CAPACITY_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+# Matched against type(exc).__name__ so both google.genai.errors and (if ever
+# installed) google.api_core.exceptions overload classes are recognised.
+CAPACITY_ERROR_NAMES = frozenset(
+    {
+        "ServiceUnavailable",
+        "TooManyRequests",
+        "InternalServerError",
+        "GatewayTimeout",
+        "DeadlineExceeded",
+        "ServerOverloaded",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+        "ConnectError",
+        "RemoteProtocolError",
+    }
+)
+
+CAPACITY_ERROR_MARKERS = (
+    "429",
+    "503",
+    "high demand",
+    "overloaded",
+    "rate limit",
+    "resource exhausted",
+    "service unavailable",
+    "too many requests",
+    "quota",
+    "timed out",
+    "timeout",
+)
+
+
+def _is_capacity_error(exc: BaseException) -> bool:
+    """True when a Gemini failure is transient overload rather than a real fault."""
+    code = getattr(exc, "code", None)
+    if isinstance(code, int) and code in CAPACITY_STATUS_CODES:
+        return True
+    if type(exc).__name__ in CAPACITY_ERROR_NAMES:
+        return True
+    message = str(exc).lower()
+    return any(marker in message for marker in CAPACITY_ERROR_MARKERS)
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest) -> StreamingResponse:
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -325,7 +393,19 @@ async def chat(req: ChatRequest) -> StreamingResponse:
             yield "data: [DONE]\n\n"
         except Exception as exc:
             failed = True
-            yield f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
+            capacity = _is_capacity_error(exc)
+            if capacity:
+                logger.warning(
+                    "Gemini stream unavailable for session %s (%s): %s",
+                    session_id,
+                    type(exc).__name__,
+                    exc,
+                )
+            else:
+                logger.exception("Gemini stream failed for session %s", session_id)
+            fallback = CAPACITY_FALLBACK if capacity else UNEXPECTED_FALLBACK
+            yield f"data: {json.dumps({'text': fallback.get(req.language, fallback['ru'])}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
         finally:
             # Persist the assistant turn even on failure (partial content included)
             # so no streamed data is ever lost.
