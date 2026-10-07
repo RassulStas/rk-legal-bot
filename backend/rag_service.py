@@ -186,7 +186,8 @@ def _fused_query_texts(query: str) -> list[str]:
     # the fusion cutoff against repeated "аренда предприятия" chunks.
     # A compact canonical phrase outperforms appending words to the noisy
     # full-sentence query (0.16 vs 0.30 cosine distance to ст. 556).
-    if re.search(r"(?i)расторг|прекрат", query) and ("аренд" in query.lower() or "найм" in query.lower()):
+    # "расторг" misses "расторжение" (no "г"); "растор" covers both.
+    if re.search(r"(?i)растор|прекрат", query) and ("аренд" in query.lower() or "найм" in query.lower()):
         texts.append("расторжение договора имущественного найма по требованию одной из сторон")
     # "ИПН" alone does not bridge to "индивидуальный подоходный налог" in
     # the embedding space (НК ст. 363 falls out of the candidate pool);
@@ -195,6 +196,28 @@ def _fused_query_texts(query: str) -> list[str]:
         texts.append(re.sub(r"(?i)\bипн\b", "индивидуального подоходного налога", query))
         if stripped != query:
             texts.append(re.sub(r"(?i)\bипн\b", "индивидуального подоходного налога", stripped))
+    # КоАП ст. 608's heading phrase is what the embedding matches; colloquial
+    # drunk-driving questions ("что будет если сесть за руль пьяным") rank
+    # the inclusion article 619-1 above it. The canonical phrase ranks 608 #1.
+    if re.search(r"(?i)опьянени|пьян\w*\b", query) and re.search(
+        r"(?i)управлени|водител|транспорт|рул\w*", query
+    ):
+        texts.append("управление транспортным средством в состоянии опьянения")
+    # Land-allocation questions miss ЗК ст. 43 ("Порядок предоставления права
+    # на земельный участок") — its own heading phrase ranks it #1 at 0.12
+    # while natural phrasings leave it below top-40.
+    if re.search(r"(?i)предоставл|выдел\w*\b|получ\w*\b", query) and "земельн" in query.lower():
+        texts.append("порядок предоставления права на земельный участок")
+    # ГПК ст. 148's chunks embed far from any filing/drafting phrasing (its
+    # own title scores 0.58 to its own chunk — a list-heavy outlier), while
+    # neighbouring articles rank ahead at ~0.23. The article's opening
+    # sentence scores 0.21 and wins the ranking.
+    if re.search(r"(?i)\bиск\w*", query) and re.search(
+        r"(?i)подач|подат|подава|направ|состав|содержан|оформл|форм\w*", query
+    ):
+        texts.append(
+            "иск подается в суд первой инстанции в письменной форме либо в форме электронного документа"
+        )
     return list(dict.fromkeys(t for t in texts if t.strip()))
 
 
@@ -202,28 +225,42 @@ def _chunk_text(text: str) -> list[str]:
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", _linearize_tables(text)) if p.strip()]
     chunks: list[str] = []
     current = ""
+    heading = ""
+
+    def emit(chunk: str) -> None:
+        # Continuation chunks of long articles carry the article heading so
+        # they embed (and stay citable) as the article rather than as bare
+        # mid-article text: ГПК ст. 148's list-heavy chunks otherwise never
+        # surface for filing questions. Chapter/section lines keep their own
+        # identity and are never prefixed with a neighbouring article.
+        if heading and not chunk.startswith(("#", "*")):
+            chunk = f"{heading}\n\n{chunk}"
+        chunks.append(chunk)
+
     for para in paragraphs:
         # Flush at article boundaries so each chunk carries its article number
         # and definitional articles are not diluted by neighbouring ones.
         if current and ARTICLE_START.match(para):
-            chunks.append(current)
+            emit(current)
             current = ""
+        if ARTICLE_START.match(para):
+            heading = para.split("\n", 1)[0]
         candidate = f"{current}\n\n{para}" if current else para
         if len(candidate) <= CHUNK_SIZE:
             current = candidate
             continue
         if current:
-            chunks.append(current)
+            emit(current)
         if len(para) <= CHUNK_SIZE:
             current = para
         else:
             for i in range(0, len(para), CHUNK_SIZE - CHUNK_OVERLAP):
                 piece = para[i : i + CHUNK_SIZE].strip()
                 if piece:
-                    chunks.append(piece)
+                    emit(piece)
             current = ""
     if current:
-        chunks.append(current)
+        emit(current)
     return chunks
 
 
