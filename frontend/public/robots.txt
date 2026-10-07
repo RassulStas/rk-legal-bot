@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+
+Sitemap: https://smartlawyer.kz/sitemap.xml
+
+# Yandex (ignored by Google) — index the apex host only.
+Host: https://smartlawyer.kz
