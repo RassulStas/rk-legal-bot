@@ -40,7 +40,7 @@ class Base(DeclarativeBase):
 
 async def init_db() -> None:
     """Create tables on startup. For production PostgreSQL, prefer Alembic migrations."""
-    from models import ChatMessage, ChatSession  # noqa: F401
+    from models import ChatMessage, ChatSession, PremiumClaim  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

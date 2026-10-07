@@ -12,6 +12,11 @@ export const UI_STRINGS = {
     welcome:
       'Сәлеметсіз бе! Мен заң саласындағы AI көмекшісімін. Қазақстан Республикасының заңнамасы бойынша сұрақтарыңызға жауап бере аламын. Қалай көмектесе аламын?',
     errorTitle: 'Қате',
+    freeTierBadge: 'Тегін режим',
+    premiumPendingBadge: 'Premium тексерілуде',
+    premiumBadge: 'Premium',
+    premiumButton: 'Premium',
+    premiumButtonAria: 'SmartLawyer Premium жоспарын ашу',
   },
   ru: {
     subtitle: 'AI-помощник по законодательству Республики Казахстан',
@@ -21,6 +26,11 @@ export const UI_STRINGS = {
     welcome:
       'Здравствуйте! Я AI-помощник в сфере права. Могу ответить на ваши вопросы по законодательству Республики Казахстан. Чем могу помочь?',
     errorTitle: 'Ошибка',
+    freeTierBadge: 'Бесплатный режим',
+    premiumPendingBadge: 'Premium на проверке',
+    premiumBadge: 'Premium',
+    premiumButton: 'Premium',
+    premiumButtonAria: 'Открыть тариф SmartLawyer Premium',
   },
 } as const
 

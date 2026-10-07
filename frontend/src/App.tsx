@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import ChatInput from './components/ChatInput'
 import Header from './components/Header'
 import MessageBubble, { type ChatMessage } from './components/MessageBubble'
+import PremiumModal, { type ClaimStatus } from './components/PremiumModal'
 import { UI_STRINGS, type Language } from './i18n'
 
 const WELCOME = (lang: Language): ChatMessage => ({
@@ -29,12 +30,53 @@ function App() {
   const [language, setLanguage] = useState<Language>('ru')
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME('ru')])
   const [isStreaming, setIsStreaming] = useState(false)
+  const [premiumOpen, setPremiumOpen] = useState(false)
+  const [claimStatus, setClaimStatus] = useState<ClaimStatus>('none')
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [messages])
+
+  const refreshClaimStatus = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/premium/status?session_id=${getSessionId()}`,
+      )
+      if (!res.ok) return
+      const body = (await res.json()) as { status?: string }
+      setClaimStatus(
+        body?.status === 'active' || body?.status === 'pending' ? body.status : 'none',
+      )
+    } catch {
+      /* offline — keep the current status */
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_BASE}/api/premium/status?session_id=${getSessionId()}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: { status?: string } | null) => {
+        if (cancelled || !body) return
+        setClaimStatus(
+          body.status === 'active' || body.status === 'pending' ? body.status : 'none',
+        )
+      })
+      .catch(() => {
+        /* offline — badge stays on the current status */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (claimStatus !== 'pending') return
+    const timer = setInterval(refreshClaimStatus, 60_000)
+    return () => clearInterval(timer)
+  }, [claimStatus, refreshClaimStatus])
 
   function handleLanguageChange(lang: Language) {
     if (lang === language || isStreaming) return
@@ -146,7 +188,12 @@ function App() {
 
   return (
     <div className="flex h-screen flex-col bg-slate-100 text-slate-800">
-      <Header language={language} onLanguageChange={handleLanguageChange} />
+      <Header
+        language={language}
+        onLanguageChange={handleLanguageChange}
+        claimStatus={claimStatus}
+        onOpenPremium={() => setPremiumOpen(true)}
+      />
       <main
         ref={scrollRef}
         className="flex-1 overflow-y-auto scroll-smooth bg-white"
@@ -162,6 +209,17 @@ function App() {
         </div>
       </main>
       <ChatInput language={language} disabled={isStreaming} onSend={sendMessage} />
+      <PremiumModal
+        open={premiumOpen}
+        apiBase={API_BASE}
+        sessionId={getSessionId()}
+        claimStatus={claimStatus}
+        onClose={() => setPremiumOpen(false)}
+        onClaimSubmitted={() => {
+          setClaimStatus('pending')
+          refreshClaimStatus()
+        }}
+      />
     </div>
   )
 }

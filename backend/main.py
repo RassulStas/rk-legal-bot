@@ -22,10 +22,11 @@ from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from database import AsyncSessionLocal, engine, init_db
 from docx_service import generate_legal_document
-from models import ChatMessage, ChatSession
+from models import ChatMessage, ChatSession, PremiumClaim
 from parser_service import start_background_parser
 from rag_service import ingest_documents, retrieve_context
 from security_logger import (
@@ -189,6 +190,21 @@ class DocumentRequest(BaseModel):
     # Restricted charset: doc_type lands in the Content-Disposition filename.
     doc_type: str = Field(default="pretenzia", pattern=r"^[a-z0-9_]{1,32}$")
     data: dict = Field(default_factory=dict)
+
+
+class PremiumClaimRequest(BaseModel):
+    phone: str = Field(min_length=5, max_length=32)
+    session_id: str | None = Field(default=None, max_length=64)
+
+
+def _normalize_kz_phone(raw: str) -> str | None:
+    """Normalize Kazakh phone input to +7XXXXXXXXXX, or None when invalid."""
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 11 and digits.startswith("8"):
+        digits = "7" + digits[1:]
+    if len(digits) == 11 and digits.startswith("7"):
+        return f"+{digits}"
+    return None
 
 
 LEGAL_KEYWORDS = re.compile(
@@ -440,6 +456,61 @@ async def download_document(req: DocumentRequest) -> StreamingResponse:
         media_type=DOCX_MEDIA_TYPE,
         headers={"Content-Disposition": f'attachment; filename="{req.doc_type}_rk.docx"'},
     )
+
+
+# Semi-automated Kaspi billing: the client submits the phone number the payment
+# was sent from; the operator verifies the incoming transfer manually and flips
+# the claim to 'active'. The UI never activates Premium by itself.
+@app.post("/api/premium/claim")
+async def create_premium_claim(req: PremiumClaimRequest) -> dict[str, str]:
+    phone = _normalize_kz_phone(req.phone)
+    if phone is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Введите номер телефона в формате +7 7XX XXX-XX-XX.",
+        )
+    session_id = req.session_id or str(uuid.uuid4())
+    async with AsyncSessionLocal() as db:
+        await _ensure_session(db, session_id, None)
+        result = await db.execute(
+            select(PremiumClaim)
+            .where(PremiumClaim.session_id == session_id)
+            .order_by(PremiumClaim.claim_id.desc())
+        )
+        claim = result.scalars().first()
+        if claim is None:
+            claim = PremiumClaim(session_id=session_id, phone=phone)
+            db.add(claim)
+        else:
+            # Idempotent resubmission: keep the operator's decision, refresh
+            # the payer phone in case the client mistyped it.
+            claim.phone = phone
+            if claim.status == "rejected":
+                claim.status = "pending"
+        await db.commit()
+        return {
+            "status": claim.status,
+            "session_id": session_id,
+            "message": (
+                "Заявка принята. Premium-доступ будет активирован после проверки "
+                "перевода (обычно не более 24 часов)."
+            ),
+        }
+
+
+@app.get("/api/premium/status")
+async def premium_status(session_id: str = "") -> dict[str, str]:
+    if not session_id:
+        return {"status": "none"}
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(PremiumClaim.status)
+            .where(PremiumClaim.session_id == session_id)
+            .order_by(PremiumClaim.claim_id.desc())
+            .limit(1)
+        )
+        status = result.scalar_one_or_none()
+        return {"status": status or "none"}
 
 
 if __name__ == "__main__":

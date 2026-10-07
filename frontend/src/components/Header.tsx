@@ -1,11 +1,26 @@
 import { LANG_LABELS, UI_STRINGS, type Language } from '../i18n'
+import type { ClaimStatus } from './PremiumModal'
 
 type HeaderProps = {
   language: Language
   onLanguageChange: (language: Language) => void
+  claimStatus: ClaimStatus
+  onOpenPremium: () => void
 }
 
-function Header({ language, onLanguageChange }: HeaderProps) {
+const BADGE_STYLES: Record<ClaimStatus, string> = {
+  none: 'border-amber-300/30 bg-amber-400/10 text-amber-200',
+  pending: 'border-amber-300/30 bg-amber-400/10 text-amber-200',
+  active: 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200',
+}
+
+const BADGE_DOT: Record<ClaimStatus, string> = {
+  none: 'bg-amber-300',
+  pending: 'animate-pulse bg-amber-300',
+  active: 'bg-emerald-300',
+}
+
+function Header({ language, onLanguageChange, claimStatus, onOpenPremium }: HeaderProps) {
   return (
     <header className="sticky top-0 z-10 bg-gradient-to-r from-navy-950 via-navy-900 to-navy-800 shadow-md">
       <div className="mx-auto flex max-w-4xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
@@ -39,9 +54,38 @@ function Header({ language, onLanguageChange }: HeaderProps) {
         </div>
 
         <div className="flex items-center gap-2.5">
-          <span className="flex items-center gap-1.5 rounded-full border border-amber-300/30 bg-amber-400/10 px-2.5 py-1 text-[11px] font-medium text-amber-200">
-            <span className="h-1.5 w-1.5 rounded-full bg-amber-300" aria-hidden="true" />
-            Free Tier Mode
+          <button
+            type="button"
+            onClick={onOpenPremium}
+            aria-label={UI_STRINGS[language].premiumButtonAria}
+            className="flex items-center gap-1.5 rounded-full bg-gradient-to-r from-amber-400 to-amber-500 px-3 py-1 text-xs font-bold text-navy-950 shadow-sm transition-all duration-200 hover:from-amber-300 hover:to-amber-400 active:scale-[0.97]"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              className="h-3.5 w-3.5"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"
+              />
+            </svg>
+            {UI_STRINGS[language].premiumButton}
+          </button>
+
+          <span
+            className={`hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium sm:flex ${BADGE_STYLES[claimStatus]}`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${BADGE_DOT[claimStatus]}`} aria-hidden="true" />
+            {claimStatus === 'active'
+              ? UI_STRINGS[language].premiumBadge
+              : claimStatus === 'pending'
+                ? UI_STRINGS[language].premiumPendingBadge
+                : UI_STRINGS[language].freeTierBadge}
           </span>
 
           <div
