@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import AdminPanel from './components/AdminPanel'
 import ChatInput from './components/ChatInput'
 import Header from './components/Header'
+import LegalDocsModal from './components/LegalDocsModal'
 import MessageBubble, { type ChatMessage } from './components/MessageBubble'
 import PremiumModal, { type ClaimStatus } from './components/PremiumModal'
+import type { LegalDocId } from './config/legal_docs'
 import { UI_STRINGS, type Language } from './i18n'
 
 const WELCOME = (lang: Language): ChatMessage => ({
@@ -26,13 +29,25 @@ function getSessionId(): string {
   return id
 }
 
+function getRoute(): string {
+  return window.location.hash.replace(/^#\/?/, '')
+}
+
 function App() {
   const [language, setLanguage] = useState<Language>('ru')
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME('ru')])
   const [isStreaming, setIsStreaming] = useState(false)
   const [premiumOpen, setPremiumOpen] = useState(false)
   const [claimStatus, setClaimStatus] = useState<ClaimStatus>('none')
+  const [legalDoc, setLegalDoc] = useState<LegalDocId | null>(null)
+  const [route, setRoute] = useState(getRoute)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const onHashChange = () => setRoute(getRoute())
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -74,7 +89,7 @@ function App() {
 
   useEffect(() => {
     if (claimStatus !== 'pending') return
-    const timer = setInterval(refreshClaimStatus, 60_000)
+    const timer = setInterval(refreshClaimStatus, 20_000)
     return () => clearInterval(timer)
   }, [claimStatus, refreshClaimStatus])
 
@@ -186,13 +201,20 @@ function App() {
     [language, messages],
   )
 
+  if (route === 'admin') {
+    return <AdminPanel apiBase={API_BASE} />
+  }
+
   return (
     <div className="flex h-screen flex-col bg-slate-100 text-slate-800">
       <Header
         language={language}
         onLanguageChange={handleLanguageChange}
         claimStatus={claimStatus}
-        onOpenPremium={() => setPremiumOpen(true)}
+        onOpenPremium={() => {
+          refreshClaimStatus()
+          setPremiumOpen(true)
+        }}
       />
       <main
         ref={scrollRef}
@@ -208,18 +230,25 @@ function App() {
           ))}
         </div>
       </main>
-      <ChatInput language={language} disabled={isStreaming} onSend={sendMessage} />
+      <ChatInput
+        language={language}
+        disabled={isStreaming}
+        onSend={sendMessage}
+        onOpenLegalDoc={setLegalDoc}
+      />
       <PremiumModal
         open={premiumOpen}
         apiBase={API_BASE}
         sessionId={getSessionId()}
         claimStatus={claimStatus}
         onClose={() => setPremiumOpen(false)}
+        onOpenOffer={() => setLegalDoc('offer')}
         onClaimSubmitted={() => {
           setClaimStatus('pending')
           refreshClaimStatus()
         }}
       />
+      {legalDoc && <LegalDocsModal docId={legalDoc} onClose={() => setLegalDoc(null)} />}
     </div>
   )
 }

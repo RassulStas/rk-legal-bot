@@ -9,6 +9,7 @@ type PremiumModalProps = {
   sessionId: string
   claimStatus: ClaimStatus
   onClose: () => void
+  onOpenOffer: () => void
   onClaimSubmitted: () => void
 }
 
@@ -35,13 +36,13 @@ function PremiumModal({
   sessionId,
   claimStatus,
   onClose,
+  onOpenOffer,
   onClaimSubmitted,
 }: PremiumModalProps) {
   const [phone, setPhone] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [copied, setCopied] = useState(false)
-  const [showOffer, setShowOffer] = useState(false)
   const [editing, setEditing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -373,19 +374,14 @@ function PremiumModal({
           </p>
           <button
             type="button"
-            onClick={() => setShowOffer((v) => !v)}
+            onClick={() => {
+              handleClose()
+              onOpenOffer()
+            }}
             className="mx-auto mt-1.5 block text-[11px] font-semibold text-navy-600 underline-offset-2 hover:underline"
           >
             Публичная оферта и условия использования
           </button>
-          {showOffer && (
-            <p className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-center text-[11px] leading-snug text-slate-500">
-              Оплачивая Premium-доступ, вы соглашаетесь с условиями публичной
-              оферты. Сервис не является юридической консультацией: ответы
-              генерируются ИИ на основе актуальных нормативно-правовых актов РК
-              и носят справочный характер.
-            </p>
-          )}
         </div>
       </div>
     </div>

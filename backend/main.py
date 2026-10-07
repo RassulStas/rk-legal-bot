@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -16,7 +17,7 @@ BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from google import genai
@@ -99,6 +100,10 @@ app.add_middleware(
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "3"))
+
+# Bearer token for the hidden admin API (claims dashboard). When unset, the
+# admin routes are dead (404) — there is no public default.
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 
 DOCX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -511,6 +516,57 @@ async def premium_status(session_id: str = "") -> dict[str, str]:
         )
         status = result.scalar_one_or_none()
         return {"status": status or "none"}
+
+
+# --- Hidden admin API (one-click Premium approval) ---------------------------
+# Protected by ADMIN_TOKEN (bearer). Wrong/missing token answers 404 so the
+# endpoint stays invisible to scanners instead of advertising its existence.
+
+
+async def _require_admin(authorization: str | None = Header(default=None)) -> None:
+    if not ADMIN_TOKEN or not authorization:
+        raise HTTPException(status_code=404, detail="Not Found")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not hmac.compare_digest(token.strip(), ADMIN_TOKEN):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _claim_to_dict(claim: PremiumClaim) -> dict[str, object]:
+    return {
+        "claim_id": claim.claim_id,
+        "session_id": claim.session_id,
+        "phone": claim.phone,
+        "status": claim.status,
+        "created_at": claim.created_at.isoformat() if claim.created_at else None,
+    }
+
+
+@app.get("/api/admin/claims")
+async def admin_list_claims(
+    status: str = "pending",
+    _: None = Depends(_require_admin),
+) -> dict[str, object]:
+    async with AsyncSessionLocal() as db:
+        query = select(PremiumClaim).order_by(PremiumClaim.claim_id.desc()).limit(200)
+        if status in ("pending", "active", "rejected"):
+            query = query.where(PremiumClaim.status == status)
+        rows = (await db.execute(query)).scalars().all()
+        return {"claims": [_claim_to_dict(claim) for claim in rows]}
+
+
+@app.post("/api/admin/claims/{claim_id}/approve")
+async def admin_approve_claim(
+    claim_id: int,
+    _: None = Depends(_require_admin),
+) -> dict[str, object]:
+    async with AsyncSessionLocal() as db:
+        claim = await db.get(PremiumClaim, claim_id)
+        if claim is None:
+            raise HTTPException(status_code=404, detail="Заявка не найдена.")
+        claim.status = "active"
+        await db.commit()
+        logger.info("Admin: claim %s (%s) approved", claim.claim_id, claim.phone)
+        return _claim_to_dict(claim)
 
 
 if __name__ == "__main__":

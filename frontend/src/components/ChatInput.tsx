@@ -1,13 +1,15 @@
 import { useEffect, useRef, type KeyboardEvent } from 'react'
+import type { LegalDocId } from '../config/legal_docs'
 import { DISCLAIMER, UI_STRINGS, type Language } from '../i18n'
 
 type ChatInputProps = {
   language: Language
   disabled: boolean
   onSend: (message: string) => void
+  onOpenLegalDoc: (docId: LegalDocId) => void
 }
 
-function ChatInput({ language, disabled, onSend }: ChatInputProps) {
+function ChatInput({ language, disabled, onSend, onOpenLegalDoc }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -75,6 +77,25 @@ function ChatInput({ language, disabled, onSend }: ChatInputProps) {
         <p className="mt-2 text-center text-[11px] leading-snug text-slate-400">
           {DISCLAIMER}
         </p>
+        <div className="mt-1.5 flex items-center justify-center gap-3">
+          <button
+            type="button"
+            onClick={() => onOpenLegalDoc('offer')}
+            className="text-[11px] font-semibold text-slate-400 underline-offset-2 transition-colors hover:text-navy-600 hover:underline"
+          >
+            Публичная оферта
+          </button>
+          <span className="text-slate-300" aria-hidden="true">
+            ·
+          </span>
+          <button
+            type="button"
+            onClick={() => onOpenLegalDoc('privacy')}
+            className="text-[11px] font-semibold text-slate-400 underline-offset-2 transition-colors hover:text-navy-600 hover:underline"
+          >
+            Политика конфиденциальности
+          </button>
+        </div>
       </div>
     </footer>
   )
