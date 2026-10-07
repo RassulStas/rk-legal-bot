@@ -3,7 +3,7 @@
 export const PREMIUM_PLAN = {
   planName: 'SmartLawyer Premium',
   priceLabel: '9,900 ₸ / месяц',
-  kaspiPhoneDisplay: '+7 (7XX) XXX-XX-XX',
+  kaspiPhoneDisplay: '+7 (7XX) XXX-XX-XX (Номер будет обновлен после активации eSIM)',
   features: [
     'Безлимитные ИИ-консультации по 6 кодексам РК (Трудовой, Гражданский, Налоговый, Предпринимательский, Земельный и КоАП).',
     'Автоматический анализ рисков в договорах (загрузка файлов).',
@@ -14,6 +14,6 @@ export const PREMIUM_PLAN = {
 export function premiumGuideText(phoneDisplay: string): string {
   return (
     `Для активации Premium-доступа переведите 9,900 ₸ через приложение Kaspi.kz ` +
-    `(Переводы) по номеру телефона: ${phoneDisplay} (Рабочий номер SmartLawyer)`
+    `(Переводы) по номеру телефона: ${phoneDisplay}`
   )
 }

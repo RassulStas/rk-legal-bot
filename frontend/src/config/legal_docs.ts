@@ -1,7 +1,7 @@
 // Legal compliance documents for SmartLawyer.kz. Russian is the language of
 // record for these documents; the UI may be Kazakh but legal copy stays RU.
-// Operator-identity placeholders are marked with «…» — fill them in before
-// treating the documents as final.
+// The operator is intentionally anonymized (no personal name/IIN/phone in
+// public copy); the contact channel is the support mailbox.
 
 export type LegalDocId = 'offer' | 'privacy'
 
@@ -21,10 +21,10 @@ export type LegalDoc = {
 export const LEGAL_DOC_ORDER: LegalDocId[] = ['offer', 'privacy']
 
 const OPERATOR = {
-  name: 'Индивидуальный предприниматель «___________» (владелец сервиса SmartLawyer)',
-  iin: 'ИИН: ___________',
-  email: 'E-mail: ___________',
-  phone: 'Телефон: +7 (___) ___-__-__',
+  nominative: 'Администрация юридического сервиса SmartLawyer.kz',
+  instrumental: 'Администрацией юридического сервиса SmartLawyer.kz',
+  contacts: 'Контакты для обращений: support@smartlawyer.kz',
+  email: 'support@smartlawyer.kz',
 }
 
 const OFFER: LegalDoc = {
@@ -32,7 +32,7 @@ const OFFER: LegalDoc = {
   title: 'Публичная оферта (Договор оказания информационных услуг)',
   updatedAt: 'Редакция от 7 октября 2026 г.',
   preamble: [
-    `Настоящий документ является публичной офертой (предложением заключить договор) ${OPERATOR.name}, ${OPERATOR.iin}, именуемого в дальнейшем «Исполнитель», и содержит условия оказания информационных услуг с использованием сервиса SmartLawyer, расположенного по адресу https://smartlawyer.kz (далее — «Сервис»).`,
+    `Настоящий документ является публичной офертой (предложением заключить договор) ${OPERATOR.nominative}, ${OPERATOR.contacts}, именуемой в дальнейшем «Исполнитель», и содержит условия оказания информационных услуг с использованием сервиса SmartLawyer, расположенного по адресу https://smartlawyer.kz (далее — «Сервис»).`,
     'В соответствии с настоящей Офертой акцептом (принятием условий) является оплата Пользователем стоимости подписки SmartLawyer Premium способом, указанным в разделе 3. С момента зачисления оплаты Договор считается заключённым на условиях настоящей Оферты.',
   ],
   sections: [
@@ -106,8 +106,8 @@ const OFFER: LegalDoc = {
       heading: '9. Заключительные положения и контакты',
       paragraphs: [
         '9.1. Исполнитель вправе изменять условия Оферты; новая редакция вступает в силу с момента её размещения на Сервисе и применяется к оплатам, совершённым после её размещения.',
-        `9.2. По всем вопросам, связанным с оплатой, активацией, возвратом средств и обработкой персональных данных, Пользователь может обратиться: ${OPERATOR.email}, ${OPERATOR.phone}.`,
-        `9.3. Реквизиты Исполнителя: ${OPERATOR.name}, ${OPERATOR.iin}.`,
+        `9.2. По всем вопросам, связанным с оплатой, активацией, возвратом средств и обработкой персональных данных, Пользователь может обратиться: ${OPERATOR.email}.`,
+        `9.3. Исполнитель: ${OPERATOR.nominative}. ${OPERATOR.contacts}.`,
       ],
     },
   ],
@@ -118,7 +118,7 @@ const PRIVACY: LegalDoc = {
   title: 'Политика конфиденциальности и обработки персональных данных',
   updatedAt: 'Редакция от 7 октября 2026 г.',
   preamble: [
-    `Настоящая Политика разработана ${OPERATOR.name} (далее — «Оператор») в соответствии с Законом Республики Казахстан от 21 мая 2013 года № 94-V «О персональных данных и их защите» и определяет порядок обработки персональных данных пользователей сервиса SmartLawyer (https://smartlawyer.kz).`,
+    `Настоящая Политика разработана ${OPERATOR.instrumental} (далее — «Оператор») в соответствии с Законом Республики Казахстан от 21 мая 2013 года № 94-V «О персональных данных и их защите» и определяет порядок обработки персональных данных пользователей сервиса SmartLawyer (https://smartlawyer.kz).`,
     'Используя Сервис, пользователь выражает согласие с условиями настоящей Политики.',
   ],
   sections: [
@@ -172,7 +172,7 @@ const PRIVACY: LegalDoc = {
     {
       heading: '6. Контакты Оператора',
       paragraphs: [
-        `По вопросам обработки персональных данных: ${OPERATOR.email}, ${OPERATOR.phone}.`,
+        `По вопросам обработки персональных данных: ${OPERATOR.email}.`,
         'Оператор рассматривает обращения в срок, не превышающий 15 (пятнадцать) рабочих дней с момента их получения.',
       ],
     },

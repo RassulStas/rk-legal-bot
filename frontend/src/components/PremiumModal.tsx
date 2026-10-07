@@ -78,7 +78,7 @@ function PremiumModal({
 
   async function copyPhone() {
     try {
-      await navigator.clipboard.writeText(phoneDisplay)
+      await navigator.clipboard.writeText(phoneDisplay.split(' (')[0])
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {
