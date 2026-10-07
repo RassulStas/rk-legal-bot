@@ -17,6 +17,11 @@ export const UI_STRINGS = {
     premiumBadge: 'Premium',
     premiumButton: 'Premium',
     premiumButtonAria: 'SmartLawyer Premium жоспарын ашу',
+    attachContract: 'Тәуекелдерді талдау үшін шартты тіркеу (Premium)',
+    attachBlocked: 'Файлды талдау Premium жоспарында ғана қолжетімді',
+    analyzing: 'Шарт талдануда...',
+    analysisTitle: 'Шарт талдамасы',
+    fileTooLarge: 'Файл 10 МБ-тан аспауы керек',
   },
   ru: {
     subtitle: 'AI-помощник по законодательству Республики Казахстан',
@@ -31,6 +36,11 @@ export const UI_STRINGS = {
     premiumBadge: 'Premium',
     premiumButton: 'Premium',
     premiumButtonAria: 'Открыть тариф SmartLawyer Premium',
+    attachContract: 'Прикрепить договор для анализа рисков (Premium)',
+    attachBlocked: 'Анализ файлов доступен в тарифе Premium',
+    analyzing: 'Анализирую договор...',
+    analysisTitle: 'Анализ договора',
+    fileTooLarge: 'Файл должен быть не больше 10 МБ',
   },
 } as const
 

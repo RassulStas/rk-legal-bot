@@ -358,7 +358,7 @@ function PremiumModal({
                       Отправка заявки...
                     </>
                   ) : (
-                    'Я оплатил, активировать Premium'
+                    'Активировать Premium'
                   )}
                 </button>
               </div>

@@ -7,6 +7,7 @@ import re
 import sys
 import uuid
 from contextlib import asynccontextmanager
+from io import BytesIO
 from pathlib import Path
 
 # Modules here (database, docx_service, models, parser_service, rag_service,
@@ -17,7 +18,7 @@ BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from google import genai
@@ -516,6 +517,217 @@ async def premium_status(session_id: str = "") -> dict[str, str]:
         )
         status = result.scalar_one_or_none()
         return {"status": status or "none"}
+
+
+# --- Premium contract risk analysis (file upload) -----------------------------
+
+CONTRACT_MAX_BYTES = 10 * 1024 * 1024
+CONTRACT_ALLOWED_EXTS = {".docx", ".doc", ".pdf", ".txt"}
+# Contracts run to tens of pages; both the RAG query and the model input are
+# capped so one upload can never exhaust the free-tier context window.
+CONTRACT_RAG_QUERY_CHARS = 12_000
+CONTRACT_ANALYSIS_CHARS = 24_000
+
+CONTRACT_SYSTEM_PROMPT = (
+    "Вы — эксперт-юрист по законодательству Республики Казахстан, специализирующийся "
+    "на договорной работе. Проанализируйте текст договора и подготовьте структурированный "
+    "разбор рисков:\n\n"
+    "1. Краткое резюме: стороны, предмет договора, ключевые условия (сроки, суммы, "
+    "ответственность сторон).\n"
+    "2. Риски: перечислите пункты договора, создающие риски, с короткой цитатой каждого "
+    "проблемного фрагмента. Для каждого риска укажите сторону, для которой он опасен "
+    "(заказчик/исполнитель/обе стороны).\n"
+    "3. Юридическая оценка: для каждого риска назовите норму законодательства РК "
+    "(кодекс или закон и статью), которую он затрагивает, и степень риска "
+    "(высокая / средняя / низкая).\n"
+    "4. Рекомендации: для каждого рискованного пункта предложите безопасную "
+    "формулировку замены.\n\n"
+    "Правила:\n"
+    "- Если текст не является договором либо слишком фрагментарен для анализа, "
+    "прямо скажите об этом.\n"
+    "- Не выдумывайте статьи: если не уверены в конкретной норме, напишите «В данном "
+    "случае требуется индивидуальный анализ официальных нормативно-правовых актов РК».\n"
+    "- Отвечайте на русском языке в Markdown (заголовки, списки, выделение важного)."
+)
+
+
+def _decode_txt(raw: bytes) -> str:
+    for encoding in ("utf-8", "utf-16", "cp1251"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _extract_docx(raw: bytes) -> str:
+    from docx import Document
+
+    document = Document(BytesIO(raw))
+    parts = [p.text for p in document.paragraphs if p.text.strip()]
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            if any(cells):
+                parts.append(" | ".join(cells))
+    return "\n".join(parts)
+
+
+def _extract_pdf(raw: bytes) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        raise HTTPException(
+            status_code=422,
+            detail="PDF-анализ временно недоступен на сервере. Загрузите файл в .docx или .txt.",
+        )
+    reader = PdfReader(BytesIO(raw))
+    return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+
+def _extract_doc(raw: bytes) -> str:
+    # Legacy .doc is a binary OLE container with no stdlib parser; most Cyrillic
+    # bodies are UTF-16LE — best-effort decode, keep the printable residue.
+    text = raw.decode("utf-16le", errors="ignore")
+    return "".join(ch for ch in text if ch.isprintable() or ch in "\n\t")
+
+
+async def _premium_active(session_id: str) -> bool:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(PremiumClaim.status)
+            .where(PremiumClaim.session_id == session_id)
+            .order_by(PremiumClaim.claim_id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none() == "active"
+
+
+@app.post("/api/analyze-contract")
+async def analyze_contract(
+    file: UploadFile = File(...),
+    session_id: str = Form(default=""),
+) -> dict[str, str]:
+    """Premium feature: extract contract text from an upload and analyze risks."""
+    session_id = session_id or str(uuid.uuid4())
+    if not await _premium_active(session_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Анализ договоров доступен в подписке SmartLawyer Premium.",
+        )
+
+    filename = os.path.basename(file.filename or "document")
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in CONTRACT_ALLOWED_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail="Поддерживаются форматы: .docx, .doc, .pdf, .txt.",
+        )
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Файл пуст.")
+    if len(raw) > CONTRACT_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Файл больше 10 МБ.")
+
+    extractors = {
+        ".txt": _decode_txt,
+        ".docx": _extract_docx,
+        ".pdf": _extract_pdf,
+        ".doc": _extract_doc,
+    }
+    try:
+        text = extractors[ext](raw)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Contract extraction failed: %s", filename)
+        raise HTTPException(
+            status_code=422,
+            detail="Не удалось извлечь текст из файла. Попробуйте формат .txt или .docx.",
+        )
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(text) < 40:
+        raise HTTPException(
+            status_code=422,
+            detail="В файле слишком мало текста для анализа.",
+        )
+
+    safe_text = mask_iin(text)
+    analysis_input = safe_text[:CONTRACT_ANALYSIS_CHARS]
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="GEMINI_API_KEY не настроен. Добавьте ключ в backend/.env и перезапустите сервер.",
+        )
+
+    rag_context = None
+    try:
+        rag_context = await asyncio.to_thread(
+            retrieve_context, safe_text[:CONTRACT_RAG_QUERY_CHARS], RAG_TOP_K
+        )
+    except Exception:
+        logger.exception("RAG: retrieval failed — contract analysis runs without context")
+
+    system_prompt = CONTRACT_SYSTEM_PROMPT
+    if rag_context:
+        system_prompt = (
+            f"{system_prompt}{RAG_CONTEXT_INSTRUCTIONS['ru']}{rag_context}"
+        )
+
+    analysis = ""
+    failed = False
+    try:
+        client = genai.Client(api_key=api_key)
+        response = await client.aio.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=f"ТЕКСТ ДОГОВОРА (файл «{filename}»):\n\n{analysis_input}",
+            config=types.GenerateContentConfig(system_instruction=system_prompt),
+        )
+        analysis = (response.text or "").strip()
+        if not analysis:
+            raise RuntimeError("empty model response")
+    except Exception as exc:
+        failed = True
+        capacity = _is_capacity_error(exc)
+        if capacity:
+            logger.warning(
+                "Gemini contract analysis unavailable for session %s (%s): %s",
+                session_id,
+                type(exc).__name__,
+                exc,
+            )
+        else:
+            logger.exception("Gemini contract analysis failed for session %s", session_id)
+        fallback = CAPACITY_FALLBACK if capacity else UNEXPECTED_FALLBACK
+        analysis = fallback["ru"]
+
+    async with AsyncSessionLocal() as db:
+        await _ensure_session(db, session_id, None)
+        db.add(
+            ChatMessage(
+                session_id=session_id,
+                role="user",
+                content=f"[Загружен договор: {filename}]",
+                classification="CONTRACT_UPLOAD",
+            )
+        )
+        db.add(
+            ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=analysis,
+                classification=(
+                    "AI_ERROR_CONTRACT" if failed
+                    else "AI_CONTRACT_ANALYSIS_RAG" if rag_context
+                    else "AI_CONTRACT_ANALYSIS"
+                ),
+            )
+        )
+        await db.commit()
+
+    return {"filename": filename, "analysis": analysis}
 
 
 # --- Hidden admin API (one-click Premium approval) ---------------------------

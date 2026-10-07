@@ -42,7 +42,6 @@ function App() {
   const [legalDoc, setLegalDoc] = useState<LegalDocId | null>(null)
   const [route, setRoute] = useState(getRoute)
   const scrollRef = useRef<HTMLDivElement>(null)
-
   useEffect(() => {
     const onHashChange = () => setRoute(getRoute())
     window.addEventListener('hashchange', onHashChange)
@@ -201,6 +200,75 @@ function App() {
     [language, messages],
   )
 
+  const analyzeContract = useCallback(
+    async (file: File) => {
+      const userNote = `[${UI_STRINGS[language].analysisTitle}: ${file.name}]`
+
+      setMessages((prev) => [
+        ...prev,
+        { role: 'user', content: userNote },
+        { role: 'assistant', content: '' },
+      ])
+      setIsStreaming(true)
+
+      const form = new FormData()
+      form.append('session_id', getSessionId())
+      form.append('file', file)
+
+      try {
+        const res = await fetch(`${API_BASE}/api/analyze-contract`, {
+          method: 'POST',
+          body: form,
+        })
+
+        if (!res.ok) {
+          if (res.status === 403) {
+            setClaimStatus('none')
+            setPremiumOpen(true)
+            throw new Error(UI_STRINGS[language].attachBlocked)
+          }
+          let detail = `HTTP ${res.status}`
+          try {
+            const body = await res.json()
+            if (body?.detail) detail = body.detail
+          } catch {
+            /* non-JSON error body */
+          }
+          throw new Error(detail)
+        }
+
+        const body = (await res.json()) as { filename?: string; analysis?: string }
+        const analysis = body.analysis ?? ''
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (last?.role === 'assistant') {
+            next[next.length - 1] = { ...last, content: analysis }
+          }
+          return next
+        })
+      } catch (err) {
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (last?.role === 'assistant' && last.content === '') {
+            next.pop()
+          }
+          return [
+            ...next,
+            {
+              role: 'error',
+              content: `${UI_STRINGS[language].errorTitle}: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ]
+        })
+      } finally {
+        setIsStreaming(false)
+      }
+    },
+    [language],
+  )
+
   if (route === 'admin') {
     return <AdminPanel apiBase={API_BASE} />
   }
@@ -233,7 +301,13 @@ function App() {
       <ChatInput
         language={language}
         disabled={isStreaming}
+        premiumActive={claimStatus === 'active'}
         onSend={sendMessage}
+        onAnalyzeContract={analyzeContract}
+        onOpenPremium={() => {
+          refreshClaimStatus()
+          setPremiumOpen(true)
+        }}
         onOpenLegalDoc={setLegalDoc}
       />
       <PremiumModal
