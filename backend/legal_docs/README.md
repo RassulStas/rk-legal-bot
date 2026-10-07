@@ -21,6 +21,20 @@ Current contents (all full consolidated official texts, Russian language):
   (01.07.1999 № 409).
 - `nalogoviy_kodeks_rk.md` — Tax Code of the Republic of Kazakhstan
   (17.07.2025 № 214-VIII, in force since 01.01.2026).
+- `predprinimatelskiy_kodeks_rk.md` — Entrepreneurial Code of the Republic of
+  Kazakhstan (29.10.2015 № 375-V ЗРК).
+- `kodeks_administrativnykh_pravonarusheniy_rk.md` — Code on Administrative
+  Offences of the Republic of Kazakhstan (05.07.2014 № 235-V ЗРК).
+- `zemelniy_kodeks_rk.md` — Land Code of the Republic of Kazakhstan
+  (20.06.2003 № 442).
+- `grazhdanskiy_protsessualnyy_kodeks_rk.md` — Civil Procedure Code of the
+  Republic of Kazakhstan (31.10.2015 № 377-V ЗРК).
+
+All fetched from the adilet.zan.kz SPA API (`GET /api/documents/by-ngr/{NGR}
+?language=rus`, `text_content` HTML) with `is_actual` verified at fetch time
+(2026-10): Предпринимательский K1500000375, КоАП K1400000235, Земельный
+K030000442_, ГПК K1500000377. Old repealed NGRs (e.g. ГПК K990000411_,
+status "yts") must not be used.
 
 Note: the previous tax document was removed earlier because it contained the
 2017 code (№ 120-VI), repealed by the Tax Code of 18.07.2025 № 214-VIII
@@ -33,7 +47,11 @@ TOC preambles) are stripped. The consolidated article text already incorporates
 those amendments, and the footnotes otherwise dilute chunk embeddings — a
 preamble-heavy first chunk once pushed the definitional article of ГК
 ст. 406 (договор купли-продажи) to rank ~2800 in retrieval. Re-apply the same
-cleaning to any future documents before adding them here.
+cleaning to any future documents before adding them here. adilet's HTML also
+requires: dropping bare «№ 123-VI» anchors that point at other documents,
+flushing loose amendment fragments («вводится», «ст. 2») that sit between
+`<p>` tags so they don't glue onto the next article paragraph, and stripping
+junk prefixes glued before «Статья N» headings.
 
 Tuning via `backend/.env`:
 - `RAG_EMBEDDING_MODEL` — any SentenceTransformers model name

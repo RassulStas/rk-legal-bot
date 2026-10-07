@@ -130,7 +130,15 @@ def _linearize_tables(text: str) -> str:
 # documents so chunks from other codes don't dilute the context. Each entry:
 # (keywords, source filenames). Checked in order; first match wins.
 _CODE_FILTERS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
-    (("налогов", "ндс", "корпоративн", "социальн"), ("nalogoviy_kodeks_rk.md",)),
+    # "налог" (not just "налогов") so e.g. "ставка земельного налога" lands
+    # in the Tax Code instead of being swallowed by the земельн filter.
+    (("налог", "ндс", "корпоративн", "социальн"), ("nalogoviy_kodeks_rk.md",)),
+    (("предпринимат",), ("predprinimatelskiy_kodeks_rk.md",)),
+    (("административн", "коап"), ("kodeks_administrativnykh_pravonarusheniy_rk.md",)),
+    (("земельн",), ("zemelniy_kodeks_rk.md",)),
+    # Must precede the гражданск entry: "гражданский процессуальный"
+    # queries belong to ГПК, not the substantive Civil Code.
+    (("процессуальн",), ("grazhdanskiy_protsessualnyy_kodeks_rk.md",)),
     (
         ("гражданск",),
         (
