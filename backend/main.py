@@ -116,6 +116,11 @@ app.add_middleware(
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "16"))
 
+# Google Search grounding: the model decides per request whether to search the
+# open web (incl. adilet.zan.kz) for statutory details and fresh amendments the
+# ChromaDB excerpts do not cover.
+CHAT_TOOLS = [types.Tool(google_search=types.GoogleSearch())]
+
 # Bearer token for the hidden admin API (claims dashboard). When unset, the
 # admin routes are dead (404) — there is no public default.
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
@@ -224,6 +229,38 @@ SYSTEM_PROMPTS = {
     ),
 }
 
+# Appended after the RAG block in both cases (with or without retrieved
+# context): retrieved excerpts stay the primary source; the search tool fills
+# gaps — statutory deadlines, specific provisions, recent amendments.
+SEARCH_GROUNDING_INSTRUCTIONS = {
+    "kk": (
+        "\n\nҚОСЫМША ДЕРЕККӨЗ — ИНТЕРНЕТТЕН АЛЫНҒАН ӨЗЕКТІ ДЕРЕКТЕР. "
+        "Дереккөздердің басымдығы: 1) жоғарыдағы заңнама үзінділері — негізгі дереккөз; "
+        "2) онда нақты мерзімдер, баптардың мазмұны, актілердің деректемелері немесе соңғы "
+        "(оның ішінде 2026 жылғы) өзгерістер жетіспесе — интернеттен іздеу нәтижелерін "
+        "пайдаланыңыз (бірінші кезекте adilet.zan.kz және ҚР ресми порталдары); "
+        "3) ешқайда дерек болмаса — өз біліміңізді пайдаланыңыз, бірақ тексеру қажеттігі "
+        "туралы міндетті түрде ескертіңіз. "
+        "Бап нөмірлері мен мерзімдерді ойдан шығаруға ТЫЙЫМ САЛЫНАДЫ. "
+        "Жауап құрылымы өзгеріссіз: а) қысқаша жауап; ә) қолданылатын нормалар; "
+        "б) қадамдық жоспар; в) тәуекелдер. "
+        "Ішкі іздеу процесін, құралдарын немесе дереккөздерін пайдаланушыға атап өтпеңіз."
+    ),
+    "ru": (
+        "\n\nДОПОЛНИТЕЛЬНЫЙ ИСТОЧНИК — АКТУАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА. "
+        "Приоритет источников: 1) извлечения из законодательства выше — основной источник; "
+        "2) если в них не хватает конкретных сроков, содержания статей, реквизитов актов или "
+        "последних поправок (в том числе 2026 года) — используйте результаты интернет-поиска "
+        "(в первую очередь adilet.zan.kz и официальные порталы РК); "
+        "3) если данных нет нигде — собственные знания, но обязательно с оговоркой о "
+        "необходимости проверки. "
+        "ЗАПРЕЩЕНО выдумывать номера статей и сроки. "
+        "Структура ответа сохраняется: а) краткий ответ; б) применимые нормы права; "
+        "в) пошаговый план действий; г) риски и практические замечания. "
+        "Не упоминайте пользователю внутренний процесс поиска, инструменты или источники."
+    ),
+}
+
 
 class HistoryMessage(BaseModel):
     role: str
@@ -293,6 +330,16 @@ def _chunk_text(chunk) -> str | None:
         return chunk.text
     except Exception:
         return None
+
+
+def _grounding_source_count(chunk) -> int:
+    try:
+        metadata = chunk.candidates[0].grounding_metadata
+    except Exception:
+        return 0
+    if metadata is None:
+        return 0
+    return len(getattr(metadata, "grounding_chunks", None) or [])
 
 
 # Gemini overload (503 "high demand", 429 quota) is a normal operating state on
@@ -438,6 +485,10 @@ async def chat(req: ChatRequest) -> StreamingResponse:
     if rag_context:
         instructions = RAG_CONTEXT_INSTRUCTIONS.get(req.language, RAG_CONTEXT_INSTRUCTIONS["ru"])
         system_prompt = f"{system_prompt}{instructions}{rag_context}"
+    search_instructions = SEARCH_GROUNDING_INSTRUCTIONS.get(
+        req.language, SEARCH_GROUNDING_INSTRUCTIONS["ru"]
+    )
+    system_prompt = f"{system_prompt}{search_instructions}"
 
     contents: list[dict] = [
         {
@@ -452,22 +503,36 @@ async def chat(req: ChatRequest) -> StreamingResponse:
 
     async def event_stream():
         collected: list[str] = []
+        grounded_sources = 0
         failed = False
         try:
             for attempt in range(1 + CAPACITY_RETRIES):
                 collected = []
+                grounded_sources = 0
                 try:
                     stream = await client.aio.models.generate_content_stream(
                         model=GEMINI_MODEL,
                         contents=contents,
-                        config=types.GenerateContentConfig(system_instruction=system_prompt),
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_prompt,
+                            tools=CHAT_TOOLS,
+                        ),
                     )
                     async for chunk in stream:
                         text = _chunk_text(chunk)
                         if text:
                             collected.append(text)
                             yield f"data: {json.dumps({'text': text}, ensure_ascii=False)}\n\n"
+                        grounded_sources = max(
+                            grounded_sources, _grounding_source_count(chunk)
+                        )
                     failed = False
+                    if grounded_sources:
+                        logger.info(
+                            "Gemini grounding: answer for session %s cites %d web source(s)",
+                            session_id,
+                            grounded_sources,
+                        )
                     yield "data: [DONE]\n\n"
                     break
                 except Exception as exc:
