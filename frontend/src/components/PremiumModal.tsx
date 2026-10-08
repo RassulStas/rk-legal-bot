@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { PREMIUM_PLAN, premiumGuideText } from '../config/premium'
+import { PREMIUM_GUIDE, PREMIUM_PLAN } from '../config/premium'
 
 export type ClaimStatus = 'none' | 'pending' | 'active'
 
@@ -47,8 +47,6 @@ function PremiumModal({
   const inputRef = useRef<HTMLInputElement>(null)
 
   const phoneDisplay = PREMIUM_PLAN.kaspiPhoneDisplay
-  const guide = premiumGuideText(phoneDisplay)
-  const guideParts = guide.split(phoneDisplay)
 
   useEffect(() => {
     if (!open) return
@@ -271,7 +269,7 @@ function PremiumModal({
                         d="M13 5l7 7-7 7M5 12h15"
                       />
                     </svg>
-                    Kaspi.kz · Переводы
+                    Kaspi.kz
                   </span>
                   <button
                     type="button"
@@ -295,10 +293,17 @@ function PremiumModal({
                     {copied ? 'Скопировано' : 'Скопировать номер'}
                   </button>
                 </div>
-                <p className="mt-2.5 text-sm leading-relaxed text-slate-600">
-                  {guideParts[0]}
-                  <span className="font-bold text-navy-900">{phoneDisplay}</span>
-                  {guideParts[1]}
+                <h3 className="mt-3 text-sm font-bold text-navy-900">
+                  {PREMIUM_GUIDE.title}
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                  {PREMIUM_GUIDE.lead}
+                </p>
+                <p className="mt-2 text-lg font-bold tracking-wide text-navy-900">
+                  {phoneDisplay}
+                </p>
+                <p className="mt-2.5 text-sm leading-relaxed text-slate-500">
+                  {PREMIUM_GUIDE.note}
                 </p>
               </div>
 

@@ -13,9 +13,16 @@ export const PREMIUM_PLAN = {
   ],
 } as const
 
-export function premiumGuideText(phoneDisplay: string): string {
-  return (
-    `Для активации Premium-доступа переведите 9,900 ₸ через приложение Kaspi.kz ` +
-    `(Переводы) по номеру телефона: ${phoneDisplay}`
-  )
-}
+// Payment instructions for the checkout step. Kept as separate blocks
+// (title / lead / note) because the modal renders them as distinct paragraphs —
+// a single template string would collapse the intended line breaks.
+export const PREMIUM_GUIDE = {
+  title: 'Активация подписки SmartLawyer Premium',
+  lead:
+    'Оплата услуг производится в ручном режиме. Пожалуйста, совершите платёж в размере ' +
+    '9,900 ₸ через мобильный банкинг Kaspi.kz ➔ Переводы ➔ Клиенту Kaspi на ' +
+    'верифицированный счет Администрации сервиса:',
+  note:
+    'После подтверждения транзакции введите ваш номер телефона ниже. Доступ к безлимитному ' +
+    'анализу кодексов и договоров будет активирован автоматически в течение 60 секунд.',
+} as const
