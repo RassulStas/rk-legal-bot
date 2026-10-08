@@ -18,7 +18,16 @@ BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from google import genai
@@ -26,6 +35,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+import telegram_bot
 from database import AsyncSessionLocal, engine, init_db
 from docx_service import generate_legal_document
 from models import ChatMessage, ChatSession, PremiumClaim
@@ -77,6 +87,10 @@ async def lifespan(_: FastAPI):
         logger.info("RAG: collection 'rk_laws' ready with %d chunk(s)", count)
     except Exception:
         logger.exception("RAG: ingestion failed — chat will run without retrieved context")
+    try:
+        await telegram_bot.ensure_webhook()
+    except Exception:
+        logger.exception("Telegram: webhook registration failed at startup")
     yield
     await engine.dispose()
 
@@ -551,6 +565,16 @@ async def create_premium_claim(req: PremiumClaimRequest) -> dict[str, str]:
             if claim.status == "rejected":
                 claim.status = "pending"
         await db.commit()
+        if claim.status == "pending" and telegram_bot.is_configured():
+            message_id = await telegram_bot.send_claim_notification(
+                claim.claim_id, claim.phone
+            )
+            if message_id is not None:
+                logger.info(
+                    "Telegram: claim %s card sent to owner (message_id=%s)",
+                    claim.claim_id,
+                    message_id,
+                )
         return {
             "status": claim.status,
             "session_id": session_id,
@@ -574,6 +598,72 @@ async def premium_status(session_id: str = "") -> dict[str, str]:
         )
         status = result.scalar_one_or_none()
         return {"status": status or "none"}
+
+
+# --- Telegram owner bridge (one-click Premium approval) -----------------------
+# Telegram pushes owner taps here (the webhook is registered on startup). Only
+# callbacks from the configured owner chat are trusted, and the secret header
+# proves the caller is Telegram itself. Answers 200 on anything successfully
+# processed so Telegram never re-delivers an update we already applied
+# (decisions are idempotent: re-applying an approve/decline is harmless).
+
+
+async def _handle_claim_callback(callback: dict) -> None:
+    sender = callback.get("from") or {}
+    if not telegram_bot.is_owner(sender.get("id")):
+        logger.warning(
+            "Telegram: ignoring callback from unauthorized user %s", sender.get("id")
+        )
+        return
+    parsed = telegram_bot.parse_claim_callback(str(callback.get("data") or ""))
+    if parsed is None:
+        return
+    action, claim_id = parsed
+    new_status = "active" if action == "approve" else "rejected"
+
+    async with AsyncSessionLocal() as db:
+        claim = await db.get(PremiumClaim, claim_id)
+        if claim is None:
+            await telegram_bot.answer_callback(
+                str(callback.get("id") or ""), "Заявка не найдена"
+            )
+            return
+        claim.status = new_status
+        await db.commit()
+        phone = claim.phone
+    logger.info("Telegram: claim %s (%s) -> %s", claim_id, phone, new_status)
+
+    await telegram_bot.answer_callback(
+        str(callback.get("id") or ""),
+        "Premium активирован ✅" if action == "approve" else "Заявка отклонена",
+    )
+    message_id = (callback.get("message") or {}).get("message_id")
+    if isinstance(message_id, int):
+        if action == "approve":
+            card = (
+                f"✅ Заявка №{claim_id} успешно ОДОБРЕНА!\n"
+                f"Клиент: {phone} — Premium-доступ активирован."
+            )
+        else:
+            card = f"🔴 Заявка №{claim_id} отклонена.\nКлиент: {phone}"
+        await telegram_bot.replace_claim_card(message_id, card)
+
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: str | None = Header(default=None),
+) -> dict[str, bool]:
+    if not telegram_bot.secret_ok(x_telegram_bot_api_secret_token):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        update = await request.json()
+    except Exception:
+        return {"ok": True}
+    callback = update.get("callback_query") if isinstance(update, dict) else None
+    if isinstance(callback, dict):
+        await _handle_claim_callback(callback)
+    return {"ok": True}
 
 
 # --- Premium contract risk analysis (file upload) -----------------------------

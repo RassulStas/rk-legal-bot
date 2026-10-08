@@ -78,7 +78,7 @@ function PremiumModal({
 
   async function copyPhone() {
     try {
-      await navigator.clipboard.writeText(phoneDisplay.split(' (')[0])
+      await navigator.clipboard.writeText(PREMIUM_PLAN.kaspiPhone)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {

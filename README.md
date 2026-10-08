@@ -62,6 +62,11 @@ First startup downloads the embedding model (~500 MB) and builds the
 | `RAG_EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | SentenceTransformer model |
 | `RAG_CHUNK_SIZE` / `RAG_CHUNK_OVERLAP` | `1000` / `150` | Chunking parameters |
 | `RAG_DOCS_DIR` / `RAG_CHROMA_PATH` | `legal_docs` / `chroma_db` | RAG paths |
+| `ADMIN_TOKEN` | — | Bearer token for the hidden `/api/admin/claims` dashboard |
+| `TELEGRAM_BOT_TOKEN` | — | Optional. Bot token — sends each Premium claim to the owner's chat with one-click approve/decline buttons |
+| `TELEGRAM_OWNER_CHAT_ID` | — | Optional. Chat id receiving the claim cards |
+| `TELEGRAM_WEBHOOK_SECRET` | — | Shared secret authenticating Telegram webhook calls |
+| `PUBLIC_BASE_URL` | `https://smartlawyer.kz` | Public origin used to register the Telegram webhook |
 
 Frontend: `VITE_API_URL` (optional) — absolute backend origin. When unset, the
 app calls same-origin `/api` (the nginx setup below).

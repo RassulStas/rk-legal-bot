@@ -3,7 +3,9 @@
 export const PREMIUM_PLAN = {
   planName: 'SmartLawyer Premium',
   priceLabel: '9,900 ₸ / месяц',
-  kaspiPhoneDisplay: '+7 (7XX) XXX-XX-XX (Номер будет обновлен после активации eSIM)',
+  // Canonical digits — what "Скопировать номер" puts on the clipboard.
+  kaspiPhone: '+77055753933',
+  kaspiPhoneDisplay: '+7 (705) 575-39-33',
   features: [
     'Безлимитные ИИ-консультации по 6 кодексам РК (Трудовой, Гражданский, Налоговый, Предпринимательский, Земельный и КоАП).',
     'Автоматический анализ рисков в договорах (загрузка файлов).',
