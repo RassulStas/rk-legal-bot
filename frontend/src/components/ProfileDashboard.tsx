@@ -343,6 +343,15 @@ function ProfileDashboard({
                 </button>
               </div>
             )}
+            <button
+              type="button"
+              onClick={() => {
+                window.location.hash = '/'
+              }}
+              className="mx-auto mt-4 flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-navy-600 underline-offset-2 transition-colors hover:text-navy-900 hover:underline"
+            >
+              ← {s.backToChat}
+            </button>
           </div>
         </div>
       </div>

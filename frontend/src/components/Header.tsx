@@ -33,7 +33,14 @@ function Header({
   return (
     <header className="sticky top-0 z-10 bg-gradient-to-r from-navy-950 via-navy-900 to-navy-800 shadow-md">
       <div className="mx-auto flex max-w-4xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
-        <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => {
+            window.location.hash = '/'
+          }}
+          aria-label="На главную"
+          className="flex cursor-pointer items-center gap-3 rounded-xl text-left transition-opacity duration-200 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+        >
           <div
             className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/20"
             aria-hidden="true"
@@ -60,7 +67,7 @@ function Header({
               {UI_STRINGS[language].subtitle}
             </p>
           </div>
-        </div>
+        </button>
 
         <div className="flex items-center gap-2.5">
           <button
