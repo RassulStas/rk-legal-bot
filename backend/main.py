@@ -1056,11 +1056,11 @@ async def _handle_claim_callback(callback: dict) -> None:
     if isinstance(message_id, int):
         if action == "approve":
             card = (
-                f"✅ Заявка №{claim_id} успешно ОДОБРЕНА!\n"
-                f"Клиент: {phone} — Premium-доступ активирован."
+                f"✅ Заявка #{claim_id} успешно ОДОБРЕНА! Доступ открыт.\n"
+                f"Клиент: {phone}"
             )
         else:
-            card = f"🔴 Заявка №{claim_id} отклонена.\nКлиент: {phone}"
+            card = f"🔴 Заявка #{claim_id} отклонена.\nКлиент: {phone}"
         await telegram_bot.replace_claim_card(message_id, card)
 
 

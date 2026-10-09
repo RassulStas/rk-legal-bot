@@ -110,10 +110,11 @@ async def send_claim_notification(claim_id: int, user_phone: str) -> int | None:
     Returns the Telegram message id, or None when delivery failed.
     """
     text = (
-        "🔔 Новая заявка на Premium!\n"
-        f"ID заявки: {claim_id}\n"
-        f"Номер телефона клиента: {user_phone}\n\n"
-        "Пожалуйста, проверьте Kaspi Gold и выберите действие ниже:"
+        "💰 ПОСТУПИЛА ОПЛАТА PREMIUM!\n"
+        f"ID Заявки: #{claim_id}\n"
+        f"Профиль пользователя: {user_phone}\n"
+        "Тариф: 9,900 ₸ / мес\n\n"
+        "Проверьте Kaspi Gold и выберите действие:"
     )
     reply_markup = {
         "inline_keyboard": [
