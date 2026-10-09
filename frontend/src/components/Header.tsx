@@ -6,6 +6,8 @@ type HeaderProps = {
   onLanguageChange: (language: Language) => void
   claimStatus: ClaimStatus
   onOpenPremium: () => void
+  onOpenCabinet: () => void
+  cabinetActive: boolean
 }
 
 const BADGE_STYLES: Record<ClaimStatus, string> = {
@@ -20,7 +22,14 @@ const BADGE_DOT: Record<ClaimStatus, string> = {
   active: 'bg-emerald-300',
 }
 
-function Header({ language, onLanguageChange, claimStatus, onOpenPremium }: HeaderProps) {
+function Header({
+  language,
+  onLanguageChange,
+  claimStatus,
+  onOpenPremium,
+  onOpenCabinet,
+  cabinetActive,
+}: HeaderProps) {
   return (
     <header className="sticky top-0 z-10 bg-gradient-to-r from-navy-950 via-navy-900 to-navy-800 shadow-md">
       <div className="mx-auto flex max-w-4xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
@@ -54,6 +63,33 @@ function Header({ language, onLanguageChange, claimStatus, onOpenPremium }: Head
         </div>
 
         <div className="flex items-center gap-2.5">
+          <button
+            type="button"
+            onClick={onOpenCabinet}
+            aria-label={UI_STRINGS[language].cabinet}
+            className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-all duration-200 ${
+              cabinetActive
+                ? 'border-white/40 bg-white/20 text-white'
+                : 'border-white/15 bg-white/10 text-navy-100 hover:bg-white/20 hover:text-white'
+            }`}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              className="h-3.5 w-3.5"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM4.5 20.5a7.5 7.5 0 0115 0"
+              />
+            </svg>
+            <span className="hidden sm:inline">{UI_STRINGS[language].cabinet}</span>
+          </button>
+
           <button
             type="button"
             onClick={onOpenPremium}

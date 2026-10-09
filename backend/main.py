@@ -4,9 +4,12 @@ import json
 import logging
 import os
 import re
+import secrets
 import sys
+import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -33,12 +36,13 @@ from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 import telegram_bot
 from database import AsyncSessionLocal, engine, init_db
 from docx_service import generate_legal_document
-from models import ChatMessage, ChatSession, PremiumClaim
+from models import ChatMessage, ChatSession, PremiumClaim, User, UserDocument
 from parser_service import start_background_parser
 from rag_service import ingest_documents, retrieve_context
 from security_logger import (
@@ -286,6 +290,21 @@ class PremiumClaimRequest(BaseModel):
     session_id: str | None = Field(default=None, max_length=64)
 
 
+class OtpLoginRequest(BaseModel):
+    phone: str = Field(min_length=5, max_length=32)
+
+
+class OtpVerifyRequest(BaseModel):
+    phone: str = Field(min_length=5, max_length=32)
+    code: str = Field(min_length=4, max_length=8)
+    # Optional: attach the anonymous chatroom session to the account on first login.
+    session_id: str | None = Field(default=None, max_length=64)
+
+
+class SessionLinkRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=64)
+
+
 def _normalize_kz_phone(raw: str) -> str | None:
     """Normalize Kazakh phone input to +7XXXXXXXXXX, or None when invalid."""
     digits = re.sub(r"\D", "", raw)
@@ -313,6 +332,288 @@ async def _ensure_session(db, session_id: str, user_id: str | None) -> None:
     existing = await db.get(ChatSession, session_id)
     if existing is None:
         db.add(ChatSession(session_id=session_id, user_id=user_id))
+
+
+# --- User accounts: phone OTP auth (mock gateway) + profile/dashboard API ----
+# Stateless bearer tokens (HMAC-signed "user_id.expiry"); no cookies, so the
+# no-credentials CORS posture stays intact. OTP codes live in-process — the
+# deployment is a single uvicorn worker, and this is a mock gateway anyway.
+
+AUTH_SECRET = os.environ.get("AUTH_SECRET", "") or ADMIN_TOKEN or secrets.token_hex(32)
+MOCK_OTP = os.environ.get("MOCK_OTP", "true").strip().lower() != "false"
+OTP_TTL_SECONDS = 300
+OTP_MAX_ATTEMPTS = 5
+AUTH_TOKEN_TTL_SECONDS = 30 * 24 * 3600
+PREMIUM_TIER_DURATION = timedelta(days=30)
+
+# phone -> [code, monotonic expiry, attempts]
+_OTP_STORE: dict[str, list] = {}
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _aware(dt: datetime) -> datetime:
+    # SQLite returns naive datetimes even for DateTime(timezone=True).
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _sign(value: str) -> str:
+    return hmac.new(AUTH_SECRET.encode(), value.encode(), "sha256").hexdigest()[:32]
+
+
+def _issue_token(user_id: int) -> str:
+    expires = int(time.time()) + AUTH_TOKEN_TTL_SECONDS
+    payload = f"{user_id}.{expires}"
+    return f"{payload}.{_sign(payload)}"
+
+
+def _user_id_from_token(token: str) -> int | None:
+    try:
+        user_id_s, exp_s, sig = token.split(".")
+    except ValueError:
+        return None
+    payload = f"{user_id_s}.{exp_s}"
+    if not hmac.compare_digest(sig, _sign(payload)):
+        return None
+    if int(exp_s) < time.time():
+        return None
+    try:
+        return int(user_id_s)
+    except ValueError:
+        return None
+
+
+async def _current_user(authorization: str | None) -> User | None:
+    if not authorization:
+        return None
+    _, _, token = authorization.partition(" ")
+    user_id = _user_id_from_token(token.strip())
+    if user_id is None:
+        return None
+    async with AsyncSessionLocal() as db:
+        return await db.get(User, user_id)
+
+
+def _issue_otp(phone: str) -> str:
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    _OTP_STORE[phone] = [code, time.monotonic() + OTP_TTL_SECONDS, 0]
+    return code
+
+
+def _otp_matches(phone: str, code: str) -> bool:
+    entry = _OTP_STORE.get(phone)
+    if entry is None:
+        return False
+    stored, expires_at, attempts = entry
+    if time.monotonic() > expires_at or attempts >= OTP_MAX_ATTEMPTS:
+        _OTP_STORE.pop(phone, None)
+        return False
+    if stored != code:
+        entry[2] += 1
+        return False
+    _OTP_STORE.pop(phone, None)
+    return True
+
+
+def _user_premium_active(user: User) -> bool:
+    return (
+        user.tier_status == "premium"
+        and user.active_until is not None
+        and _aware(user.active_until) > _utcnow()
+    )
+
+
+async def _sync_premium_from_claims(db, user: User) -> None:
+    """Backfill tier columns when a claim was approved before the account existed."""
+    if _user_premium_active(user):
+        return
+    result = await db.execute(
+        select(PremiumClaim)
+        .where(PremiumClaim.phone == user.phone, PremiumClaim.status == "active")
+        .order_by(PremiumClaim.claim_id.desc())
+        .limit(1)
+    )
+    claim = result.scalars().first()
+    if claim is None:
+        return
+    base = _aware(claim.updated_at or claim.created_at or _utcnow())
+    user.tier_status = "premium"
+    user.active_until = max(base, _utcnow()) + PREMIUM_TIER_DURATION
+
+
+async def _activate_user_premium(phone: str) -> None:
+    """Flip the account tier when an operator approves the matching claim."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).where(User.phone == phone))
+        user = result.scalars().first()
+        if user is None:
+            return
+        user.tier_status = "premium"
+        user.active_until = _utcnow() + PREMIUM_TIER_DURATION
+        await db.commit()
+        logger.info("Auth: user %s (%s) upgraded to premium", user.user_id, phone)
+
+
+async def _link_session_to_user(db, session_id: str, user: User) -> None:
+    session = await db.get(ChatSession, session_id)
+    if session is None:
+        db.add(ChatSession(session_id=session_id, user_id=str(user.user_id)))
+    elif not session.user_id:
+        session.user_id = str(user.user_id)
+
+
+async def _user_for_session(db, session_id: str) -> User | None:
+    session = await db.get(ChatSession, session_id)
+    if session is None or not session.user_id or not session.user_id.isdigit():
+        return None
+    return await db.get(User, int(session.user_id))
+
+
+async def _profile_payload(db, user: User) -> dict[str, object]:
+    documents_count = await db.scalar(
+        select(func.count(UserDocument.doc_id)).where(UserDocument.user_id == user.user_id)
+    )
+    sessions_count = await db.scalar(
+        select(func.count(ChatSession.session_id)).where(
+            ChatSession.user_id == str(user.user_id)
+        )
+    )
+    premium = _user_premium_active(user)
+    return {
+        "user_id": user.user_id,
+        "phone": user.phone,
+        "tier_status": "premium" if premium else "free",
+        "is_premium": premium,
+        "active_until": _aware(user.active_until).isoformat() if user.active_until else None,
+        "documents_count": documents_count or 0,
+        "sessions_count": sessions_count or 0,
+        "created_at": _aware(user.created_at).isoformat() if user.created_at else None,
+    }
+
+
+@app.post("/api/auth/login")
+async def auth_login(req: OtpLoginRequest) -> dict[str, object]:
+    phone = _normalize_kz_phone(req.phone)
+    if phone is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Введите номер телефона в формате +7 7XX XXX-XX-XX.",
+        )
+    code = _issue_otp(phone)
+    logger.info("Auth: OTP issued for %s (mock=%s)", phone, MOCK_OTP)
+    return {
+        "otp_sent": True,
+        "otp_ttl_seconds": OTP_TTL_SECONDS,
+        # Mock mode only — a real SMS gateway would deliver the code instead.
+        **({"dev_code": code} if MOCK_OTP else {}),
+    }
+
+
+@app.post("/api/auth/verify")
+async def auth_verify(req: OtpVerifyRequest) -> dict[str, object]:
+    phone = _normalize_kz_phone(req.phone)
+    if phone is None or not _otp_matches(phone, req.code.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail="Неверный или просроченный код подтверждения.",
+        )
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).where(User.phone == phone))
+        user = result.scalars().first()
+        if user is None:
+            user = User(phone=phone)
+            db.add(user)
+            try:
+                await db.flush()
+            except IntegrityError:
+                await db.rollback()
+                result = await db.execute(select(User).where(User.phone == phone))
+                user = result.scalars().one()
+        await _sync_premium_from_claims(db, user)
+        if req.session_id:
+            await _link_session_to_user(db, req.session_id, user)
+        await db.commit()
+        return {"token": _issue_token(user.user_id), "user": await _profile_payload(db, user)}
+
+
+@app.post("/api/auth/link")
+async def auth_link(
+    req: SessionLinkRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, object]:
+    user = await _current_user(authorization)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Требуется вход в личный кабинет.")
+    async with AsyncSessionLocal() as db:
+        fresh = await db.get(User, user.user_id)
+        await _link_session_to_user(db, req.session_id, fresh)
+        await db.commit()
+    return {"linked": True, "session_id": req.session_id}
+
+
+@app.get("/api/user/profile")
+async def user_profile(
+    authorization: str | None = Header(default=None),
+) -> dict[str, object]:
+    user = await _current_user(authorization)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Требуется вход в личный кабинет.")
+    async with AsyncSessionLocal() as db:
+        fresh = await db.get(User, user.user_id)
+        await _sync_premium_from_claims(db, fresh)
+        await db.commit()
+        return await _profile_payload(db, fresh)
+
+
+@app.get("/api/user/documents")
+async def list_user_documents(
+    authorization: str | None = Header(default=None),
+) -> dict[str, object]:
+    user = await _current_user(authorization)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Требуется вход в личный кабинет.")
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(UserDocument)
+                .where(UserDocument.user_id == user.user_id)
+                .order_by(UserDocument.created_at.desc())
+                .limit(200)
+            )
+        ).scalars().all()
+        return {
+            "documents": [
+                {
+                    "doc_id": doc.doc_id,
+                    "filename": doc.filename,
+                    "created_at": _aware(doc.created_at).isoformat(),
+                    "preview": doc.analysis_summary[:220],
+                }
+                for doc in rows
+            ]
+        }
+
+
+@app.get("/api/user/documents/{doc_id}")
+async def get_user_document(
+    doc_id: int,
+    authorization: str | None = Header(default=None),
+) -> dict[str, object]:
+    user = await _current_user(authorization)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Требуется вход в личный кабинет.")
+    async with AsyncSessionLocal() as db:
+        doc = await db.get(UserDocument, doc_id)
+        if doc is None or doc.user_id != user.user_id:
+            raise HTTPException(status_code=404, detail="Документ не найден.")
+        return {
+            "doc_id": doc.doc_id,
+            "filename": doc.filename,
+            "created_at": _aware(doc.created_at).isoformat(),
+            "analysis_summary": doc.analysis_summary,
+        }
 
 
 @app.get("/")
@@ -417,7 +718,10 @@ def _is_capacity_error(exc: BaseException) -> bool:
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest) -> StreamingResponse:
+async def chat(
+    req: ChatRequest,
+    authorization: str | None = Header(default=None),
+) -> StreamingResponse:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise HTTPException(
@@ -475,6 +779,15 @@ async def chat(req: ChatRequest) -> StreamingResponse:
             )
         )
         await db.commit()
+
+    # Authenticated users: attach this chatroom session to their account so
+    # contract uploads and Premium status resolve against the profile.
+    if authorization:
+        user = await _current_user(authorization)
+        if user is not None:
+            async with AsyncSessionLocal() as db:
+                await _link_session_to_user(db, session_id, user)
+                await db.commit()
 
     system_prompt = SYSTEM_PROMPTS.get(req.language, SYSTEM_PROMPTS["ru"])
     rag_context = None
@@ -602,9 +915,13 @@ async def download_document(req: DocumentRequest) -> StreamingResponse:
 
 # Semi-automated Kaspi billing: the client submits the phone number the payment
 # was sent from; the operator verifies the incoming transfer manually and flips
-# the claim to 'active'. The UI never activates Premium by itself.
+# the claim to 'active'. The UI never activates Premium by itself. When the
+# client is signed in, the claim (and any later approval) binds to their profile.
 @app.post("/api/premium/claim")
-async def create_premium_claim(req: PremiumClaimRequest) -> dict[str, str]:
+async def create_premium_claim(
+    req: PremiumClaimRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, str]:
     phone = _normalize_kz_phone(req.phone)
     if phone is None:
         raise HTTPException(
@@ -612,8 +929,26 @@ async def create_premium_claim(req: PremiumClaimRequest) -> dict[str, str]:
             detail="Введите номер телефона в формате +7 7XX XXX-XX-XX.",
         )
     session_id = req.session_id or str(uuid.uuid4())
+
+    user = await _current_user(authorization)
+    if user is not None:
+        async with AsyncSessionLocal() as db:
+            fresh = await db.get(User, user.user_id)
+            await _sync_premium_from_claims(db, fresh)
+            if _user_premium_active(fresh):
+                await db.commit()
+                return {
+                    "status": "active",
+                    "session_id": session_id,
+                    "message": "Premium уже активен на вашем аккаунте.",
+                }
+            await _link_session_to_user(db, session_id, fresh)
+            await db.commit()
+
     async with AsyncSessionLocal() as db:
         await _ensure_session(db, session_id, None)
+        if user is not None:
+            await _link_session_to_user(db, session_id, user)
         result = await db.execute(
             select(PremiumClaim)
             .where(PremiumClaim.session_id == session_id)
@@ -651,7 +986,20 @@ async def create_premium_claim(req: PremiumClaimRequest) -> dict[str, str]:
 
 
 @app.get("/api/premium/status")
-async def premium_status(session_id: str = "") -> dict[str, str]:
+async def premium_status(
+    session_id: str = "",
+    authorization: str | None = Header(default=None),
+) -> dict[str, str]:
+    user = await _current_user(authorization)
+    if user is not None:
+        async with AsyncSessionLocal() as db:
+            fresh = await db.get(User, user.user_id)
+            await _sync_premium_from_claims(db, fresh)
+            if session_id:
+                await _link_session_to_user(db, session_id, fresh)
+            await db.commit()
+            if _user_premium_active(fresh):
+                return {"status": "active"}
     if not session_id:
         return {"status": "none"}
     async with AsyncSessionLocal() as db:
@@ -696,6 +1044,8 @@ async def _handle_claim_callback(callback: dict) -> None:
         claim.status = new_status
         await db.commit()
         phone = claim.phone
+    if action == "approve":
+        await _activate_user_premium(phone)
     logger.info("Telegram: claim %s (%s) -> %s", claim_id, phone, new_status)
 
     await telegram_bot.answer_callback(
@@ -812,16 +1162,31 @@ async def _premium_active(session_id: str) -> bool:
             .order_by(PremiumClaim.claim_id.desc())
             .limit(1)
         )
-        return result.scalar_one_or_none() == "active"
+        if result.scalar_one_or_none() == "active":
+            return True
+        # Sessions linked to an authenticated Premium profile inherit the tier.
+        user = await _user_for_session(db, session_id)
+        if user is None:
+            return False
+        await _sync_premium_from_claims(db, user)
+        await db.commit()
+        return _user_premium_active(user)
 
 
 @app.post("/api/analyze-contract")
 async def analyze_contract(
     file: UploadFile = File(...),
     session_id: str = Form(default=""),
+    authorization: str | None = Header(default=None),
 ) -> dict[str, str]:
     """Premium feature: extract contract text from an upload and analyze risks."""
     session_id = session_id or str(uuid.uuid4())
+    user = await _current_user(authorization)
+    if user is not None:
+        async with AsyncSessionLocal() as db:
+            fresh = await db.get(User, user.user_id)
+            await _link_session_to_user(db, session_id, fresh)
+            await db.commit()
     if not await _premium_active(session_id):
         raise HTTPException(
             status_code=403,
@@ -954,6 +1319,17 @@ async def analyze_contract(
                 ),
             )
         )
+        # Archive the readout in the account's contract history when the
+        # session is tied to a registered user.
+        owner = await _user_for_session(db, session_id)
+        if owner is not None:
+            db.add(
+                UserDocument(
+                    user_id=owner.user_id,
+                    filename=filename,
+                    analysis_summary=analysis,
+                )
+            )
         await db.commit()
 
     return {"filename": filename, "analysis": analysis}
@@ -1007,6 +1383,7 @@ async def admin_approve_claim(
         claim.status = "active"
         await db.commit()
         logger.info("Admin: claim %s (%s) approved", claim.claim_id, claim.phone)
+        await _activate_user_premium(claim.phone)
         return _claim_to_dict(claim)
 
 

@@ -63,3 +63,45 @@ class PremiumClaim(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Normalized +7XXXXXXXXXX, unique across accounts.
+    phone: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    # 'free' | 'premium'
+    tier_status: Mapped[str] = mapped_column(String(16), nullable=False, default="free")
+    active_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    documents: Mapped[list["UserDocument"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        order_by="UserDocument.created_at.desc()",
+    )
+
+
+class UserDocument(Base):
+    __tablename__ = "user_documents"
+    __table_args__ = (
+        Index("ix_user_documents_user_created", "user_id", "created_at"),
+    )
+
+    doc_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Full AI risk-analysis readout, persisted so the archive can re-render it on demand.
+    analysis_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    user: Mapped[User] = relationship(back_populates="documents")

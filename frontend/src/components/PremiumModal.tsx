@@ -8,6 +8,10 @@ type PremiumModalProps = {
   apiBase: string
   sessionId: string
   claimStatus: ClaimStatus
+  // Signed-in profile context: pre-fills the payer phone and binds the claim
+  // to the authenticated user so approval upgrades the account tier.
+  authToken?: string | null
+  defaultPhone?: string
   onClose: () => void
   onOpenOffer: () => void
   onClaimSubmitted: () => void
@@ -35,6 +39,8 @@ function PremiumModal({
   apiBase,
   sessionId,
   claimStatus,
+  authToken,
+  defaultPhone,
   onClose,
   onOpenOffer,
   onClaimSubmitted,
@@ -64,6 +70,12 @@ function PremiumModal({
   useEffect(() => {
     if (open && claimStatus === 'none') inputRef.current?.focus()
   }, [open, claimStatus])
+
+  useEffect(() => {
+    if (open && defaultPhone) {
+      setPhone((prev) => (prev.trim() ? prev : defaultPhone))
+    }
+  }, [open, defaultPhone])
 
   if (!open) return null
 
@@ -97,7 +109,10 @@ function PremiumModal({
     try {
       const res = await fetch(`${apiBase}/api/premium/claim`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
         body: JSON.stringify({ phone, session_id: sessionId }),
       })
       const body = (await res.json().catch(() => null)) as {

@@ -5,6 +5,9 @@ import Header from './components/Header'
 import LegalDocsModal from './components/LegalDocsModal'
 import MessageBubble, { type ChatMessage } from './components/MessageBubble'
 import PremiumModal, { type ClaimStatus } from './components/PremiumModal'
+import ProfileDashboard from './components/ProfileDashboard'
+import type { Profile } from './auth'
+import { authHeaders, clearUserToken, getUserToken } from './auth'
 import type { LegalDocId } from './config/legal_docs'
 import { UI_STRINGS, type Language } from './i18n'
 
@@ -41,6 +44,8 @@ function App() {
   const [claimStatus, setClaimStatus] = useState<ClaimStatus>('none')
   const [legalDoc, setLegalDoc] = useState<LegalDocId | null>(null)
   const [route, setRoute] = useState(getRoute)
+  const [userToken, setUserToken] = useState(() => getUserToken())
+  const [profile, setProfile] = useState<Profile | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const onHashChange = () => setRoute(getRoute())
@@ -57,6 +62,7 @@ function App() {
     try {
       const res = await fetch(
         `${API_BASE}/api/premium/status?session_id=${getSessionId()}`,
+        { headers: authHeaders() },
       )
       if (!res.ok) return
       const body = (await res.json()) as { status?: string }
@@ -68,9 +74,31 @@ function App() {
     }
   }, [])
 
+  const refreshProfile = useCallback(async () => {
+    if (!getUserToken()) {
+      setProfile(null)
+      return
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/user/profile`, { headers: authHeaders() })
+      if (res.status === 401) {
+        clearUserToken()
+        setUserToken(null)
+        setProfile(null)
+        return
+      }
+      if (!res.ok) return
+      setProfile((await res.json()) as Profile)
+    } catch {
+      /* offline — keep the cached profile */
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
-    fetch(`${API_BASE}/api/premium/status?session_id=${getSessionId()}`)
+    fetch(`${API_BASE}/api/premium/status?session_id=${getSessionId()}`, {
+      headers: authHeaders(),
+    })
       .then((res) => (res.ok ? res.json() : null))
       .then((body: { status?: string } | null) => {
         if (cancelled || !body) return
@@ -87,6 +115,10 @@ function App() {
   }, [])
 
   useEffect(() => {
+    void refreshProfile()
+  }, [refreshProfile])
+
+  useEffect(() => {
     if (claimStatus !== 'pending') return
     const timer = setInterval(refreshClaimStatus, 20_000)
     return () => clearInterval(timer)
@@ -100,6 +132,14 @@ function App() {
       return onlyWelcome ? [WELCOME(lang)] : prev
     })
   }
+
+  function handleAuthChange() {
+    setUserToken(getUserToken())
+    void refreshProfile()
+    void refreshClaimStatus()
+  }
+
+  const premiumActive = claimStatus === 'active' || Boolean(profile?.is_premium)
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -117,7 +157,7 @@ function App() {
       try {
         const res = await fetch(`${API_BASE}/api/chat`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({
             message: text,
             language,
@@ -218,6 +258,7 @@ function App() {
       try {
         const res = await fetch(`${API_BASE}/api/analyze-contract`, {
           method: 'POST',
+          headers: authHeaders(),
           body: form,
         })
 
@@ -273,12 +314,64 @@ function App() {
     return <AdminPanel apiBase={API_BASE} />
   }
 
+  if (route === 'profile') {
+    return (
+      <div className="flex h-screen flex-col bg-slate-100 text-slate-800">
+        <Header
+          language={language}
+          onLanguageChange={handleLanguageChange}
+          claimStatus={claimStatus}
+          onOpenCabinet={() => {
+            window.location.hash = '/profile'
+          }}
+          cabinetActive
+          onOpenPremium={() => {
+            refreshClaimStatus()
+            setPremiumOpen(true)
+          }}
+        />
+        <main className="flex-1 overflow-y-auto bg-white">
+          <ProfileDashboard
+            language={language}
+            apiBase={API_BASE}
+            sessionId={getSessionId()}
+            onOpenPremium={() => {
+              refreshClaimStatus()
+              setPremiumOpen(true)
+            }}
+            onAuthChange={handleAuthChange}
+          />
+        </main>
+        <PremiumModal
+          open={premiumOpen}
+          apiBase={API_BASE}
+          sessionId={getSessionId()}
+          claimStatus={claimStatus}
+          authToken={userToken}
+          defaultPhone={profile?.phone}
+          onClose={() => setPremiumOpen(false)}
+          onOpenOffer={() => setLegalDoc('offer')}
+          onClaimSubmitted={() => {
+            setClaimStatus('pending')
+            refreshClaimStatus()
+            void refreshProfile()
+          }}
+        />
+        {legalDoc && <LegalDocsModal docId={legalDoc} onClose={() => setLegalDoc(null)} />}
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-screen flex-col bg-slate-100 text-slate-800">
       <Header
         language={language}
         onLanguageChange={handleLanguageChange}
         claimStatus={claimStatus}
+        onOpenCabinet={() => {
+          window.location.hash = '/profile'
+        }}
+        cabinetActive={false}
         onOpenPremium={() => {
           refreshClaimStatus()
           setPremiumOpen(true)
@@ -301,7 +394,7 @@ function App() {
       <ChatInput
         language={language}
         disabled={isStreaming}
-        premiumActive={claimStatus === 'active'}
+        premiumActive={premiumActive}
         onSend={sendMessage}
         onAnalyzeContract={analyzeContract}
         onOpenPremium={() => {
@@ -315,11 +408,14 @@ function App() {
         apiBase={API_BASE}
         sessionId={getSessionId()}
         claimStatus={claimStatus}
+        authToken={userToken}
+        defaultPhone={profile?.phone}
         onClose={() => setPremiumOpen(false)}
         onOpenOffer={() => setLegalDoc('offer')}
         onClaimSubmitted={() => {
           setClaimStatus('pending')
           refreshClaimStatus()
+          void refreshProfile()
         }}
       />
       {legalDoc && <LegalDocsModal docId={legalDoc} onClose={() => setLegalDoc(null)} />}
