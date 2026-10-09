@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { PREMIUM_GUIDE, PREMIUM_PLAN } from '../config/premium'
+import { CHECKOUT_COPY, PREMIUM_PLAN, getKaspiPhone } from '../config/premium'
 
 export type ClaimStatus = 'none' | 'pending' | 'active'
 
@@ -48,11 +48,20 @@ function PremiumModal({
   const [phone, setPhone] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
-
-  const phoneDisplay = PREMIUM_PLAN.kaspiPhoneDisplay
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Raw requisites are never rendered; the platform only changes WHICH action
+  // button the checkout card shows. Coarse pointer + mobile UA = phone/tablet.
+  const [isMobile] = useState(
+    () =>
+      typeof navigator !== 'undefined' &&
+      (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+        (navigator.maxTouchPoints > 1 &&
+          typeof window !== 'undefined' &&
+          window.matchMedia('(pointer: coarse)').matches)),
+  )
 
   useEffect(() => {
     if (!open) return
@@ -86,13 +95,18 @@ function PremiumModal({
 
   const showForm = claimStatus === 'none' || editing
 
-  async function copyPhone() {
+  function showToast(message: string) {
+    setToast(message)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(null), 2800)
+  }
+
+  async function copyRequisites() {
     try {
-      await navigator.clipboard.writeText(PREMIUM_PLAN.kaspiPhone)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      await navigator.clipboard.writeText(getKaspiPhone())
+      showToast(CHECKOUT_COPY.toast)
     } catch {
-      /* clipboard unavailable — the number stays visible for manual entry */
+      showToast('Не удалось скопировать автоматически — разрешите доступ к буферу обмена.')
     }
   }
 
@@ -268,14 +282,38 @@ function PremiumModal({
           ) : (
             <>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#F14635]/10 px-2 py-0.5 text-[11px] font-bold tracking-wide text-[#F14635]">
+                <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#F14635]/10 px-2 py-0.5 text-[11px] font-bold tracking-wide text-[#F14635]">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    className="h-3.5 w-3.5"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M13 5l7 7-7 7M5 12h15"
+                    />
+                  </svg>
+                  Kaspi.kz
+                </span>
+                <h3 className="mt-3 text-sm font-bold text-navy-900">
+                  {CHECKOUT_COPY.title}
+                </h3>
+                {isMobile ? (
+                  <button
+                    type="button"
+                    onClick={copyRequisites}
+                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#F14635] py-3.5 text-sm font-bold text-white shadow-md shadow-[#F14635]/30 transition-all duration-200 hover:brightness-110 active:scale-[0.99]"
+                  >
                     <svg
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
-                      strokeWidth="2.2"
-                      className="h-3.5 w-3.5"
+                      strokeWidth="2"
+                      className="h-4 w-4"
                       aria-hidden="true"
                     >
                       <path
@@ -284,51 +322,48 @@ function PremiumModal({
                         d="M13 5l7 7-7 7M5 12h15"
                       />
                     </svg>
-                    Kaspi.kz
-                  </span>
-                  <button
-                    type="button"
-                    onClick={copyPhone}
-                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-800"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      className="h-3.5 w-3.5"
-                      aria-hidden="true"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M8 7V6a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2h-1M6 8h8a2 2 0 012 2v8a2 2 0 01-2 2H6a2 2 0 01-2-2v-8a2 2 0 012-2z"
-                      />
-                    </svg>
-                    {copied ? 'Скопировано' : 'Скопировать номер'}
+                    {CHECKOUT_COPY.mobileButton}
                   </button>
-                </div>
-                <h3 className="mt-3 text-sm font-bold text-navy-900">
-                  {PREMIUM_GUIDE.title}
-                </h3>
-                <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                  {PREMIUM_GUIDE.lead}
-                </p>
-                <p className="mt-2 text-lg font-bold tracking-wide text-navy-900">
-                  {phoneDisplay}
-                </p>
-                <p className="mt-2.5 text-sm leading-relaxed text-slate-500">
-                  {PREMIUM_GUIDE.note}
-                </p>
+                ) : (
+                  <>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                      {CHECKOUT_COPY.desktopLead}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={copyRequisites}
+                      className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-navy-900 py-3 text-sm font-bold text-white shadow-md shadow-navy-900/20 transition-all duration-200 hover:bg-navy-800 active:scale-[0.99]"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        className="h-4 w-4"
+                        aria-hidden="true"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M8 7V6a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 012 2h-1M6 8h8a2 2 0 012 2v8a2 2 0 01-2 2H6a2 2 0 01-2-2v-8a2 2 0 012-2z"
+                        />
+                      </svg>
+                      {CHECKOUT_COPY.desktopButton}
+                    </button>
+                  </>
+                )}
+                  <p className="mt-3 text-sm leading-relaxed text-slate-500">
+                    {CHECKOUT_COPY.note}
+                  </p>
               </div>
 
               <div className="mt-5">
                 <label
                   htmlFor="premium-phone"
                   className="block text-sm font-semibold text-slate-700"
-                >
-                  Введите ваш номер телефона, с которого совершена оплата
-                </label>
+                  >
+                    Введите ваш номер телефона, с которого совершена оплата
+                  </label>
                 <input
                   ref={inputRef}
                   id="premium-phone"
@@ -402,6 +437,17 @@ function PremiumModal({
           >
             Публичная оферта и условия использования
           </button>
+        </div>
+      </div>
+
+      <div
+        aria-live="polite"
+        className={`pointer-events-none fixed inset-x-0 bottom-6 z-[60] flex justify-center px-4 transition-all duration-300 ${
+          toast ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'
+        }`}
+      >
+        <div className="rounded-xl bg-navy-900/95 px-4 py-2.5 text-sm font-medium text-white shadow-xl">
+          {toast ?? ''}
         </div>
       </div>
     </div>

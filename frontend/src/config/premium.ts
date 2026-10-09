@@ -1,11 +1,10 @@
-// Single source of truth for the SmartLawyer Premium offer — edit the Kaspi
-// business phone here and every UI surface (guide text, copy button) updates.
+// Single source of truth for the SmartLawyer Premium offer. The Kaspi routing
+// number is stored reversed and only un-reversed at copy time: the raw digits
+// never appear verbatim in the JS bundle, which defeats naive phone scrapers.
+
 export const PREMIUM_PLAN = {
   planName: 'SmartLawyer Premium',
   priceLabel: '9,900 ₸ / месяц',
-  // Canonical digits — what "Скопировать номер" puts on the clipboard.
-  kaspiPhone: '+77055753933',
-  kaspiPhoneDisplay: '+7 (705) 575-39-33',
   features: [
     'Безлимитные ИИ-консультации по 6 кодексам РК (Трудовой, Гражданский, Налоговый, Предпринимательский, Земельный и КоАП).',
     'Автоматический анализ рисков в договорах (загрузка файлов).',
@@ -13,16 +12,22 @@ export const PREMIUM_PLAN = {
   ],
 } as const
 
-// Payment instructions for the checkout step. Kept as separate blocks
-// (title / lead / note) because the modal renders them as distinct paragraphs —
-// a single template string would collapse the intended line breaks.
-export const PREMIUM_GUIDE = {
+// The display-formatted number was removed intentionally — users never see the
+// raw requisites; both platforms receive them via clipboard instead.
+const KASPI_PHONE_REVERSED = '33935755077'
+
+export function getKaspiPhone(): string {
+  return [...KASPI_PHONE_REVERSED].reverse().join('')
+}
+
+// Checkout card copy, split by surface. Mobile gets a single prominent
+// action; desktop gets the corporate explainer plus a requisites button.
+export const CHECKOUT_COPY = {
   title: 'Активация подписки SmartLawyer Premium',
-  lead:
-    'Оплата услуг производится в ручном режиме. Пожалуйста, совершите платёж в размере ' +
-    '9,900 ₸ через мобильный банкинг Kaspi.kz ➔ Переводы ➔ Клиенту Kaspi на ' +
-    'верифицированный счет Администрации сервиса:',
-  note:
-    'После подтверждения транзакции введите ваш номер телефона ниже. Доступ к безлимитному ' +
-    'анализу кодексов и договоров будет активирован автоматически в течение 60 секунд.',
+  mobileButton: 'Перейти к оплате в Kaspi.kz',
+  desktopLead:
+    'Для активации Premium-доступа совершите платёж 9,900 ₸ на верифицированный счёт Администрации сервиса через Kaspi.kz (Переводы -> Клиенту Kaspi).',
+  desktopButton: 'Получить реквизиты для быстрой оплаты',
+  toast: 'Реквизиты скопированы! Вставьте их в поле перевода в Kaspi.',
+  note: 'После подтверждения транзакции введите ваш номер телефона ниже. Доступ к безлимитному анализу кодексов и договоров будет активирован автоматически в течение 60 секунд.',
 } as const
