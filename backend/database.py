@@ -38,6 +38,29 @@ class Base(DeclarativeBase):
     pass
 
 
+# Freemium quota columns added 2026-10-12; create_all never ALTERs existing
+# tables, so SQLite deployments get them via these guarded ALTERs at boot.
+_MIGRATION_COLUMNS = {
+    "users": (
+        ("free_requests_left", "INTEGER NOT NULL DEFAULT 3"),
+        ("last_request_date", "TEXT"),
+    ),
+    "chat_sessions": (
+        ("free_requests_left", "INTEGER NOT NULL DEFAULT 3"),
+        ("last_request_date", "TEXT"),
+    ),
+}
+
+
+async def _apply_sqlite_migrations(conn) -> None:
+    for table, columns in _MIGRATION_COLUMNS.items():
+        rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()
+        existing = {row[1] for row in rows}
+        for name, ddl in columns:
+            if name not in existing:
+                await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
 async def init_db() -> None:
     """Create tables on startup. For production PostgreSQL, prefer Alembic migrations."""
     from models import (  # noqa: F401
@@ -50,6 +73,8 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if engine.dialect.name == "sqlite":
+            await _apply_sqlite_migrations(conn)
 
 
 async def get_db() -> AsyncSession:

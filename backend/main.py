@@ -32,7 +32,8 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.responses import Response
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -128,6 +129,22 @@ CHAT_TOOLS = [types.Tool(google_search=types.GoogleSearch())]
 # Bearer token for the hidden admin API (claims dashboard). When unset, the
 # admin routes are dead (404) — there is no public default.
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
+
+# Freemium daily quota: N free chats per Astana calendar day, lazily reset on
+# the first request of a new day. Kazakhstan unified on UTC+5 (Asia/Almaty).
+FREE_DAILY_REQUESTS = max(1, int(os.environ.get("FREE_DAILY_REQUESTS", "3")))
+ASTANA_TZ = timezone(timedelta(hours=5))
+
+FREE_LIMIT_MESSAGES = {
+    "kk": (
+        "Бүгінгі тегін сұраныстар лимиті таусылды. Шексіз қолжетімділік үшін "
+        "SmartLawyer Premium рәсімдеңіз."
+    ),
+    "ru": (
+        "Лимит бесплатных запросов на сегодня исчерпан. Оформите SmartLawyer Premium "
+        "для неограниченного доступа."
+    ),
+}
 
 DOCX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -332,6 +349,9 @@ async def _ensure_session(db, session_id: str, user_id: str | None) -> None:
     existing = await db.get(ChatSession, session_id)
     if existing is None:
         db.add(ChatSession(session_id=session_id, user_id=user_id))
+        # Flush so a later get() in the same transaction sees the row; with
+        # autoflush off, check-then-add flows (ensure + link) would double-insert.
+        await db.flush()
 
 
 # --- User accounts: phone OTP auth (mock gateway) + profile/dashboard API ----
@@ -717,11 +737,43 @@ def _is_capacity_error(exc: BaseException) -> bool:
     return any(marker in message for marker in CAPACITY_ERROR_MARKERS)
 
 
+def _astana_today() -> str:
+    # Fixed UTC+5: the server clock runs UTC-ish and must never drive the quota.
+    return datetime.now(ASTANA_TZ).date().isoformat()
+
+
+async def _consume_free_request(db, session_id: str, user: User | None) -> int:
+    """Charge one free request; returns remaining count, or -1 when exhausted.
+
+    Signed-in callers are charged on their account row (quota follows the user
+    across chat sessions); anonymous callers on the chat session row.
+    """
+    if user is not None:
+        row = await db.get(User, user.user_id)
+    else:
+        row = await db.get(ChatSession, session_id)
+        if row is None:
+            row = ChatSession(session_id=session_id)
+            db.add(row)
+    if row is None:
+        return FREE_DAILY_REQUESTS
+    today = _astana_today()
+    if row.last_request_date != today:
+        row.last_request_date = today
+        row.free_requests_left = FREE_DAILY_REQUESTS
+    if row.free_requests_left <= 0:
+        await db.commit()  # persist the day rollover even on a blocked request
+        return -1
+    row.free_requests_left -= 1
+    await db.commit()
+    return row.free_requests_left
+
+
 @app.post("/api/chat")
 async def chat(
     req: ChatRequest,
     authorization: str | None = Header(default=None),
-) -> StreamingResponse:
+) -> Response:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise HTTPException(
@@ -766,6 +818,30 @@ async def chat(
         VIOLATION_PII_LEAK_PREVENTED if iin_count else _classify_user_message(req.message)
     )
 
+    # Authenticated users: attach this chatroom session to their account first,
+    # so contract uploads, Premium status and the quota all resolve against it.
+    user = await _current_user(authorization) if authorization else None
+    if user is not None:
+        async with AsyncSessionLocal() as db:
+            await _ensure_session(db, session_id, str(user.user_id))
+            await _link_session_to_user(db, session_id, user)
+            await db.commit()
+
+    # Freemium gate: premium (session claim or account tier) chats freely;
+    # free users burn one daily request. Blocked requests never reach Gemini.
+    if not await _premium_active(session_id):
+        async with AsyncSessionLocal() as db:
+            remaining = await _consume_free_request(db, session_id, user)
+        if remaining < 0:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": FREE_LIMIT_MESSAGES.get(req.language, FREE_LIMIT_MESSAGES["ru"]),
+                    "code": "free_limit_reached",
+                    "free_requests_left": 0,
+                },
+            )
+
     # Persist the user message BEFORE streaming so input is never lost,
     # even if the Gemini call fails.
     async with AsyncSessionLocal() as db:
@@ -779,15 +855,6 @@ async def chat(
             )
         )
         await db.commit()
-
-    # Authenticated users: attach this chatroom session to their account so
-    # contract uploads and Premium status resolve against the profile.
-    if authorization:
-        user = await _current_user(authorization)
-        if user is not None:
-            async with AsyncSessionLocal() as db:
-                await _link_session_to_user(db, session_id, user)
-                await db.commit()
 
     system_prompt = SYSTEM_PROMPTS.get(req.language, SYSTEM_PROMPTS["ru"])
     rag_context = None
@@ -1064,6 +1131,25 @@ async def _handle_claim_callback(callback: dict) -> None:
         await telegram_bot.replace_claim_card(message_id, card)
 
 
+STATUS_REPLY_TEXT = os.environ.get(
+    "STATUS_REPLY_TEXT",
+    "🚀 Сервер SmartLawyer.kz активен! Ошибок нет. Система RAG и пульт "
+    "P2P-одобрений работают в штатном режиме 24/7.",
+)
+
+
+async def _handle_bot_message(message: dict) -> None:
+    # Telegram appends "@botname" to commands used in groups.
+    text = str(message.get("text") or "").strip()
+    if text.split("@", 1)[0].strip() != "/status":
+        return
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    if not telegram_bot.is_owner(chat.get("id")):
+        logger.warning("Telegram: ignoring /status from unauthorized chat %s", chat.get("id"))
+        return
+    await telegram_bot.send_message(chat.get("id"), STATUS_REPLY_TEXT)
+
+
 @app.post("/api/telegram/webhook")
 async def telegram_webhook(
     request: Request,
@@ -1078,6 +1164,9 @@ async def telegram_webhook(
     callback = update.get("callback_query") if isinstance(update, dict) else None
     if isinstance(callback, dict):
         await _handle_claim_callback(callback)
+    message = update.get("message") if isinstance(update, dict) else None
+    if isinstance(message, dict):
+        await _handle_bot_message(message)
     return {"ok": True}
 
 

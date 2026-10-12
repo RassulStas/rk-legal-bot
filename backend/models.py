@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -20,6 +20,11 @@ class ChatSession(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
+    # Daily free-request quota (Astana calendar day). Premium accounts bypass it.
+    free_requests_left: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default=text("3")
+    )
+    last_request_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
     messages: Mapped[list["ChatMessage"]] = relationship(
         back_populates="session",
@@ -79,6 +84,11 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
+    # Daily free-request quota (Astana calendar day). Premium accounts bypass it.
+    free_requests_left: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default=text("3")
+    )
+    last_request_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
     documents: Mapped[list["UserDocument"]] = relationship(
         back_populates="user",

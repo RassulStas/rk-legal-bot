@@ -168,11 +168,16 @@ function App() {
 
         if (!res.ok) {
           let detail = `HTTP ${res.status}`
+          let code = ''
           try {
             const body = await res.json()
             if (body?.detail) detail = body.detail
+            code = body?.code ?? ''
           } catch {
             /* non-JSON error body */
+          }
+          if (res.status === 429 && code === 'free_limit_reached') {
+            setPremiumOpen(true)
           }
           throw new Error(detail)
         }

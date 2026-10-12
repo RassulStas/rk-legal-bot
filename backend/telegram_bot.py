@@ -142,6 +142,11 @@ async def answer_callback(callback_id: str, toast: str) -> None:
     await _call("answerCallbackQuery", {"callback_query_id": callback_id, "text": toast})
 
 
+async def send_message(chat_id: Any, text: str) -> None:
+    """Plain text reply to a chat (used by the owner /status command)."""
+    await _call("sendMessage", {"chat_id": chat_id, "text": text})
+
+
 async def replace_claim_card(message_id: int, text: str) -> None:
     """Replace the claim card with the decision result (drops the buttons)."""
     await _call(
@@ -159,7 +164,8 @@ async def ensure_webhook() -> bool:
         return False
     payload: dict[str, Any] = {
         "url": webhook_url(),
-        "allowed_updates": ["callback_query"],
+        # "message" feeds the owner-only /status command alongside claim cards.
+        "allowed_updates": ["callback_query", "message"],
         "drop_pending_updates": False,
     }
     secret = _env("TELEGRAM_WEBHOOK_SECRET")
