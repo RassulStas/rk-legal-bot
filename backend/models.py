@@ -22,7 +22,7 @@ class ChatSession(Base):
     )
     # Daily free-request quota (Astana calendar day). Premium accounts bypass it.
     free_requests_left: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=3, server_default=text("3")
+        Integer, nullable=False, default=1, server_default=text("1")
     )
     last_request_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
@@ -86,7 +86,7 @@ class User(Base):
     )
     # Daily free-request quota (Astana calendar day). Premium accounts bypass it.
     free_requests_left: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=3, server_default=text("3")
+        Integer, nullable=False, default=1, server_default=text("1")
     )
     last_request_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
 

@@ -130,9 +130,11 @@ CHAT_TOOLS = [types.Tool(google_search=types.GoogleSearch())]
 # admin routes are dead (404) — there is no public default.
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 
-# Freemium daily quota: N free chats per Astana calendar day, lazily reset on
-# the first request of a new day. Kazakhstan unified on UTC+5 (Asia/Almaty).
-FREE_DAILY_REQUESTS = max(1, int(os.environ.get("FREE_DAILY_REQUESTS", "3")))
+# Two-tier freemium funnel, per Astana calendar day (UTC+5), lazily reset on
+# the first request of a new day: anonymous visitors get one taste, then the
+# phone-auth wall; signed-in free users get one more message, then Premium.
+FREE_ANONYMOUS_REQUESTS = max(0, int(os.environ.get("FREE_ANONYMOUS_REQUESTS", "1")))
+FREE_AUTHENTICATED_REQUESTS = max(0, int(os.environ.get("FREE_AUTHENTICATED_REQUESTS", "1")))
 ASTANA_TZ = timezone(timedelta(hours=5))
 
 FREE_LIMIT_MESSAGES = {
@@ -143,6 +145,18 @@ FREE_LIMIT_MESSAGES = {
     "ru": (
         "Лимит бесплатных запросов на сегодня исчерпан. Оформите SmartLawyer Premium "
         "для неограниченного доступа."
+    ),
+}
+
+# Anonymous quota exhausted: point at the phone-auth wall, not the paywall.
+AUTH_REQUIRED_MESSAGES = {
+    "kk": (
+        "Тегін сұраныс лимиті таусылды. Жалғастыру үшін телефон нөмірі арқылы "
+        "кіңіз — тағы бір тегін жауап аласыз."
+    ),
+    "ru": (
+        "Лимит бесплатных запросов исчерпан. Войдите по номеру телефона, "
+        "чтобы продолжить, — вам будет доступен ещё один бесплатный ответ."
     ),
 }
 
@@ -746,8 +760,10 @@ async def _consume_free_request(db, session_id: str, user: User | None) -> int:
     """Charge one free request; returns remaining count, or -1 when exhausted.
 
     Signed-in callers are charged on their account row (quota follows the user
-    across chat sessions); anonymous callers on the chat session row.
+    across chat sessions) with the authenticated cap; anonymous callers on the
+    chat session row with the anonymous cap.
     """
+    cap = FREE_AUTHENTICATED_REQUESTS if user is not None else FREE_ANONYMOUS_REQUESTS
     if user is not None:
         row = await db.get(User, user.user_id)
     else:
@@ -756,11 +772,11 @@ async def _consume_free_request(db, session_id: str, user: User | None) -> int:
             row = ChatSession(session_id=session_id)
             db.add(row)
     if row is None:
-        return FREE_DAILY_REQUESTS
+        return cap
     today = _astana_today()
     if row.last_request_date != today:
         row.last_request_date = today
-        row.free_requests_left = FREE_DAILY_REQUESTS
+        row.free_requests_left = cap
     if row.free_requests_left <= 0:
         await db.commit()  # persist the day rollover even on a blocked request
         return -1
@@ -828,11 +844,24 @@ async def chat(
             await db.commit()
 
     # Freemium gate: premium (session claim or account tier) chats freely;
-    # free users burn one daily request. Blocked requests never reach Gemini.
+    # free users burn one daily request. Anonymous exhaustion routes to the
+    # phone-auth wall, signed-in exhaustion to the Premium paywall. Blocked
+    # requests never reach Gemini and are never persisted.
     if not await _premium_active(session_id):
         async with AsyncSessionLocal() as db:
             remaining = await _consume_free_request(db, session_id, user)
         if remaining < 0:
+            if user is None:
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": AUTH_REQUIRED_MESSAGES.get(
+                            req.language, AUTH_REQUIRED_MESSAGES["ru"]
+                        ),
+                        "code": "auth_required",
+                        "free_requests_left": 0,
+                    },
+                )
             return JSONResponse(
                 status_code=429,
                 content={

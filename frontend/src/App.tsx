@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import AdminPanel from './components/AdminPanel'
+import AuthModal from './components/AuthModal'
 import ChatInput from './components/ChatInput'
 import Header from './components/Header'
 import LegalDocsModal from './components/LegalDocsModal'
@@ -41,6 +42,7 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME('ru')])
   const [isStreaming, setIsStreaming] = useState(false)
   const [premiumOpen, setPremiumOpen] = useState(false)
+  const [authOpen, setAuthOpen] = useState(false)
   const [claimStatus, setClaimStatus] = useState<ClaimStatus>('none')
   const [legalDoc, setLegalDoc] = useState<LegalDocId | null>(null)
   const [route, setRoute] = useState(getRoute)
@@ -178,6 +180,9 @@ function App() {
           }
           if (res.status === 429 && code === 'free_limit_reached') {
             setPremiumOpen(true)
+          }
+          if (res.status === 429 && code === 'auth_required') {
+            setAuthOpen(true)
           }
           throw new Error(detail)
         }
@@ -421,6 +426,17 @@ function App() {
           setClaimStatus('pending')
           refreshClaimStatus()
           void refreshProfile()
+        }}
+      />
+      <AuthModal
+        open={authOpen}
+        apiBase={API_BASE}
+        sessionId={getSessionId()}
+        language={language}
+        onClose={() => setAuthOpen(false)}
+        onAuthenticated={() => {
+          setAuthOpen(false)
+          handleAuthChange()
         }}
       />
       {legalDoc && <LegalDocsModal docId={legalDoc} onClose={() => setLegalDoc(null)} />}

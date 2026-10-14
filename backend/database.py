@@ -40,13 +40,14 @@ class Base(DeclarativeBase):
 
 # Freemium quota columns added 2026-10-12; create_all never ALTERs existing
 # tables, so SQLite deployments get them via these guarded ALTERs at boot.
+# (The per-tier caps live in main.py; the DEFAULT here only seeds fresh rows.)
 _MIGRATION_COLUMNS = {
     "users": (
-        ("free_requests_left", "INTEGER NOT NULL DEFAULT 3"),
+        ("free_requests_left", "INTEGER NOT NULL DEFAULT 1"),
         ("last_request_date", "TEXT"),
     ),
     "chat_sessions": (
-        ("free_requests_left", "INTEGER NOT NULL DEFAULT 3"),
+        ("free_requests_left", "INTEGER NOT NULL DEFAULT 1"),
         ("last_request_date", "TEXT"),
     ),
 }
