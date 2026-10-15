@@ -83,6 +83,31 @@ function MarkdownBlock({ content }: { content: string }) {
   )
 }
 
+// Markdown → plain text for the copy buffer: strips emphasis, headers, quotes,
+// list/HR/link syntax so pasted answers read as clean prose. Links keep their
+// URL in parentheses (legal answers cite adilet.zan.kz) and fenced code blocks
+// survive verbatim via placeholders. Single underscores are deliberately kept —
+// they are near-nonexistent as RU/KK italics but common in identifiers.
+export function stripMarkdown(text: string): string {
+  const fences: string[] = []
+  let out = text.replace(/```[^\n]*\n?([\s\S]*?)(?:```|$)/g, (_, code: string) => {
+    fences.push(code.replace(/\n$/, ''))
+    return `\u0000${fences.length - 1}\u0000`
+  })
+  out = out
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, '$1 ($2)')
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '')
+    .replace(/^[ \t]{0,3}>[ \t]?/gm, '')
+    .replace(/^[ \t]{0,3}([-*_])[ \t]*(?:\1[ \t]*){2,}$/gm, '')
+    .replace(/^([ \t]*)[-*+][ \t]+/gm, '$1- ')
+    .replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, '$2')
+    .replace(/\*(?=\S)([^*\n]*\S)\*/g, '$1')
+    .replace(/`([^`\n]+)`/g, '$1')
+  out = out.replace(/\u0000(\d+)\u0000/g, (_, i: string) => fences[Number(i)] ?? '')
+  return out.replace(/\n{3,}/g, '\n\n').trim()
+}
+
 async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text)
@@ -132,7 +157,7 @@ function CopyButton({ text, labels }: { text: string; labels: CopyLabels }) {
   useEffect(() => () => window.clearTimeout(timer.current), [])
 
   const onClick = async () => {
-    const ok = await copyText(text)
+    const ok = await copyText(stripMarkdown(text))
     window.clearTimeout(timer.current)
     setStatus(ok ? 'done' : 'failed')
     timer.current = window.setTimeout(() => setStatus('idle'), 2000)
