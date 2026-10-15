@@ -415,6 +415,11 @@ function App() {
               <MessageBubble
                 message={message}
                 streaming={isStreaming && i === messages.length - 1}
+                copyLabels={{
+                  copy: UI_STRINGS[language].copyAnswer,
+                  copied: UI_STRINGS[language].copied,
+                  failed: UI_STRINGS[language].copyFailed,
+                }}
               >
                 {message.locked && !userToken && !unlockDismissed && (
                   <AuthForm

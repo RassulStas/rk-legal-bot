@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -12,6 +13,8 @@ export type ChatMessage = {
   locked?: boolean
 }
 
+export type CopyLabels = { copy: string; copied: string; failed: string }
+
 // Anonymous first-response teaser: everything past this many characters is
 // rendered blurred behind the unlock card.
 export const FREE_PREVIEW_CHARS = 250
@@ -19,6 +22,7 @@ export const FREE_PREVIEW_CHARS = 250
 type MessageBubbleProps = {
   message: ChatMessage
   streaming?: boolean
+  copyLabels?: CopyLabels
   children?: ReactNode
 }
 
@@ -79,7 +83,80 @@ function MarkdownBlock({ content }: { content: string }) {
   )
 }
 
-function MessageBubble({ message, streaming, children }: MessageBubbleProps) {
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    try {
+      return document.execCommand('copy')
+    } catch {
+      return false
+    } finally {
+      ta.remove()
+    }
+  }
+}
+
+function CopyIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      className="h-3.5 w-3.5"
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+      />
+    </svg>
+  )
+}
+
+function CopyButton({ text, labels }: { text: string; labels: CopyLabels }) {
+  const [status, setStatus] = useState<'idle' | 'done' | 'failed'>('idle')
+  const timer = useRef<number | undefined>(undefined)
+
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+
+  const onClick = async () => {
+    const ok = await copyText(text)
+    window.clearTimeout(timer.current)
+    setStatus(ok ? 'done' : 'failed')
+    timer.current = window.setTimeout(() => setStatus('idle'), 2000)
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void onClick()}
+      className={`mt-1 inline-flex w-fit items-center gap-1 rounded-md px-1.5 py-0.5 text-xs transition-colors ${
+        status === 'done'
+          ? 'text-emerald-600'
+          : status === 'failed'
+            ? 'text-red-500'
+            : 'text-slate-500 hover:bg-slate-200/70 hover:text-slate-700'
+      }`}
+    >
+      <CopyIcon />
+      {status === 'done' ? labels.copied : status === 'failed' ? labels.failed : labels.copy}
+    </button>
+  )
+}
+
+function MessageBubble({ message, streaming, copyLabels, children }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isError = message.role === 'error'
 
@@ -114,22 +191,29 @@ function MessageBubble({ message, streaming, children }: MessageBubbleProps) {
     body = <MarkdownBlock content={message.content} />
   }
 
+  // No copy affordance while locked — the blurred tail is paywalled content.
+  const showCopy =
+    !isUser && !isError && !streaming && !message.locked && message.content !== '' && !!copyLabels
+
   return (
     <div className={`flex gap-2.5 ${isUser ? 'justify-end' : 'justify-start'}`}>
       {!isUser && !isError && <ScalesAvatar />}
-      <div
-        className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm md:max-w-[75%] ${
-          isUser
-            ? 'rounded-br-md bg-gradient-to-br from-navy-800 to-navy-900 text-white'
-            : isError
-              ? 'rounded-bl-md border border-red-200 bg-red-50 text-red-700'
-              : 'rounded-bl-md border border-slate-200/80 bg-slate-100 text-slate-800'
-        }`}
-      >
-        {body}
-        {streaming && message.content !== '' && (
-          <span className="ml-0.5 inline-block h-3.5 w-2 animate-pulse rounded-sm bg-navy-500 align-text-bottom" />
-        )}
+      <div className="flex min-w-0 max-w-[85%] flex-col md:max-w-[75%]">
+        <div
+          className={`w-fit rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
+            isUser
+              ? 'rounded-br-md bg-gradient-to-br from-navy-800 to-navy-900 text-white'
+              : isError
+                ? 'rounded-bl-md border border-red-200 bg-red-50 text-red-700'
+                : 'rounded-bl-md border border-slate-200/80 bg-slate-100 text-slate-800'
+          }`}
+        >
+          {body}
+          {streaming && message.content !== '' && (
+            <span className="ml-0.5 inline-block h-3.5 w-2 animate-pulse rounded-sm bg-navy-500 align-text-bottom" />
+          )}
+        </div>
+        {showCopy && copyLabels && <CopyButton text={message.content} labels={copyLabels} />}
       </div>
     </div>
   )
