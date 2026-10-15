@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import AdminPanel from './components/AdminPanel'
+import AuthForm from './components/AuthForm'
 import AuthModal from './components/AuthModal'
 import ChatInput from './components/ChatInput'
 import Header from './components/Header'
 import LegalDocsModal from './components/LegalDocsModal'
-import MessageBubble, { type ChatMessage } from './components/MessageBubble'
+import MessageBubble, { FREE_PREVIEW_CHARS, type ChatMessage } from './components/MessageBubble'
 import PremiumModal, { type ClaimStatus } from './components/PremiumModal'
 import ProfileDashboard from './components/ProfileDashboard'
 import type { Profile } from './auth'
@@ -43,6 +44,7 @@ function App() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [premiumOpen, setPremiumOpen] = useState(false)
   const [authOpen, setAuthOpen] = useState(false)
+  const [unlockDismissed, setUnlockDismissed] = useState(false)
   const [claimStatus, setClaimStatus] = useState<ClaimStatus>('none')
   const [legalDoc, setLegalDoc] = useState<LegalDocId | null>(null)
   const [route, setRoute] = useState(getRoute)
@@ -141,6 +143,12 @@ function App() {
     void refreshClaimStatus()
   }
 
+  function unlockAfterAuth() {
+    setMessages((prev) => prev.map((m) => (m.locked ? { ...m, locked: false } : m)))
+    setUnlockDismissed(false)
+    handleAuthChange()
+  }
+
   const premiumActive = claimStatus === 'active' || Boolean(profile?.is_premium)
 
   const sendMessage = useCallback(
@@ -148,6 +156,9 @@ function App() {
       const history = messages
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => ({ role: m.role, content: m.content }))
+
+      // Teaser gate: only anonymous, non-premium visitors get blurred responses.
+      const lockEligible = !getUserToken() && !premiumActive
 
       setMessages((prev) => [
         ...prev,
@@ -217,7 +228,14 @@ function App() {
                   const next = [...prev]
                   const last = next[next.length - 1]
                   if (last?.role === 'assistant') {
-                    next[next.length - 1] = { ...last, content: last.content + parsed.text }
+                    const content = last.content + parsed.text
+                    next[next.length - 1] = {
+                      ...last,
+                      content,
+                      locked:
+                        last.locked ||
+                        (lockEligible && content.length > FREE_PREVIEW_CHARS),
+                    }
                   }
                   return next
                 })
@@ -393,11 +411,47 @@ function App() {
       >
         <div className="mx-auto flex max-w-4xl flex-col gap-5 px-4 py-6 sm:px-6">
           {messages.map((message, i) => (
-            <MessageBubble
-              key={i}
-              message={message}
-              streaming={isStreaming && i === messages.length - 1}
-            />
+            <div key={i} className="flex flex-col">
+              <MessageBubble
+                message={message}
+                streaming={isStreaming && i === messages.length - 1}
+              >
+                {message.locked && !userToken && !unlockDismissed && (
+                  <AuthForm
+                    apiBase={API_BASE}
+                    sessionId={getSessionId()}
+                    language={language}
+                    title={UI_STRINGS[language].unlockTitle}
+                    lead={UI_STRINGS[language].unlockLead}
+                    onClose={() => setUnlockDismissed(true)}
+                    onAuthenticated={unlockAfterAuth}
+                  />
+                )}
+              </MessageBubble>
+              {message.locked && !userToken && unlockDismissed && (
+                <button
+                  type="button"
+                  onClick={() => setUnlockDismissed(false)}
+                  className="ml-11 mt-1 flex w-fit items-center gap-1.5 rounded-full border border-navy-200 bg-navy-50 px-4 py-2 text-xs font-bold text-navy-700 transition-colors hover:bg-navy-100"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    className="h-3.5 w-3.5"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                    />
+                  </svg>
+                  {UI_STRINGS[language].unlockShowFull}
+                </button>
+              )}
+            </div>
           ))}
         </div>
       </main>
@@ -436,7 +490,7 @@ function App() {
         onClose={() => setAuthOpen(false)}
         onAuthenticated={() => {
           setAuthOpen(false)
-          handleAuthChange()
+          unlockAfterAuth()
         }}
       />
       {legalDoc && <LegalDocsModal docId={legalDoc} onClose={() => setLegalDoc(null)} />}
