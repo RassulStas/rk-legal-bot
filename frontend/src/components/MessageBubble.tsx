@@ -27,20 +27,23 @@ type MessageBubbleProps = {
   children?: ReactNode
 }
 
-// Teaser cut = end of the second complete block (direct answer + cited
-// articles stay sharp; risk audits and details blur). When that boundary is
-// absurdly far, fall back to the last boundary near the threshold; when the
-// text has no block structure at all, hard cut at FREE_PREVIEW_CHARS.
+// Teaser cut: block boundary closest to the ~800-char target (direct answer +
+// legal basis stay sharp; risk audits and details blur). Boundaries far from
+// the target are ignored; unstructured text hard-cuts at FREE_PREVIEW_CHARS.
 function teaserCut(content: string): number {
   if (content.length <= FREE_PREVIEW_CHARS) return content.length
   const boundaries = [
     ...content.matchAll(/\n\n|\n(?=[-*] )|\n(?=\d+\. )/g),
   ].map((m) => m.index + (m[0] === '\n\n' ? 2 : 1))
-  boundaries.sort((a, b) => a - b)
-  const second = boundaries[1]
-  if (second !== undefined && second <= FREE_PREVIEW_CHARS + 300) return second
-  const last = boundaries.filter((b) => b <= FREE_PREVIEW_CHARS + 300).pop()
-  return last !== undefined && last >= 300 ? last : FREE_PREVIEW_CHARS
+  const window = boundaries.filter(
+    (b) => b >= 350 && b <= FREE_PREVIEW_CHARS + 300 && b < content.length,
+  )
+  if (window.length) {
+    return window.reduce((a, b) =>
+      Math.abs(b - FREE_PREVIEW_CHARS) < Math.abs(a - FREE_PREVIEW_CHARS) ? b : a,
+    )
+  }
+  return FREE_PREVIEW_CHARS
 }
 
 function TypingDots() {
