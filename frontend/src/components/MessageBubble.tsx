@@ -15,9 +15,10 @@ export type ChatMessage = {
 
 export type CopyLabels = { copy: string; copied: string; failed: string }
 
-// Anonymous first-response teaser: everything past this many characters is
-// rendered blurred behind the unlock card.
-export const FREE_PREVIEW_CHARS = 250
+// Anonymous first-response teaser: the sharp region targets the first two
+// paragraph blocks (direct answer + cited articles); everything past the cut
+// is rendered blurred behind the unlock card.
+export const FREE_PREVIEW_CHARS = 800
 
 type MessageBubbleProps = {
   message: ChatMessage
@@ -26,16 +27,20 @@ type MessageBubbleProps = {
   children?: ReactNode
 }
 
-// Cut at the first block/list boundary at/after ~150 chars so the blurred
-// section starts on a clean paragraph or bullet edge instead of mid-sentence;
-// hard cut at FREE_PREVIEW_CHARS when no boundary is nearby.
+// Teaser cut = end of the second complete block (direct answer + cited
+// articles stay sharp; risk audits and details blur). When that boundary is
+// absurdly far, fall back to the last boundary near the threshold; when the
+// text has no block structure at all, hard cut at FREE_PREVIEW_CHARS.
 function teaserCut(content: string): number {
   if (content.length <= FREE_PREVIEW_CHARS) return content.length
-  for (const sep of ['\n\n', '\n- ', '\n* ', '\n1. ']) {
-    const i = content.indexOf(sep, 150)
-    if (i !== -1 && i <= FREE_PREVIEW_CHARS + 150) return i + (sep === '\n\n' ? 2 : 1)
-  }
-  return FREE_PREVIEW_CHARS
+  const boundaries = [
+    ...content.matchAll(/\n\n|\n(?=[-*] )|\n(?=\d+\. )/g),
+  ].map((m) => m.index + (m[0] === '\n\n' ? 2 : 1))
+  boundaries.sort((a, b) => a - b)
+  const second = boundaries[1]
+  if (second !== undefined && second <= FREE_PREVIEW_CHARS + 300) return second
+  const last = boundaries.filter((b) => b <= FREE_PREVIEW_CHARS + 300).pop()
+  return last !== undefined && last >= 300 ? last : FREE_PREVIEW_CHARS
 }
 
 function TypingDots() {
