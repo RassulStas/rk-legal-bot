@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode
 
 # Modules here (database, docx_service, models, parser_service, rag_service,
 # security_logger) are flat inside backend/. Put this directory on sys.path so
@@ -1209,11 +1209,14 @@ async def telegram_webhook(
 # Telegram cards keep working as the manual fallback for Kaspi claims.
 #
 # Secrets (server .env only, never committed):
-#   ROBOKASSA_PASSWORD2     merchant "password #2" used to sign ResultURL calls
-#   PAYMENT_WEBHOOK_SECRET  HMAC-SHA256 key for JSON callbacks (signed header
-#                           X-Payment-Signature = hex hmac-sha256(raw body))
-#   PREMIUM_PRICE           expected payment amount in tenge (default 9900;
-#                           0 disables the amount floor)
+#   ROBOKASSA_MERCHANT_ID    shop id from the merchant cabinet
+#   ROBOKASSA_PASSWORD_1     signing key for checkout links (server-side only)
+#   ROBOKASSA_PASSWORD_2     verification key for ResultURL notifications
+#   PAYMENT_WEBHOOK_SECRET   HMAC-SHA256 key for JSON callbacks (signed header
+#                            X-Payment-Signature = hex hmac-sha256(raw body))
+#   PREMIUM_PRICE            expected payment amount in tenge (default 9900;
+#                            0 disables the amount floor)
+#   ROBOKASSA_PAY_URL        payment form origin (default: Robokassa KZ)
 # Until the matching secret is set the endpoint answers 503, so a deployment
 # can never activate Premium off unsigned traffic.
 
@@ -1254,7 +1257,7 @@ def _robokassa_md5(out_sum: str, inv_id: str, shp: dict[str, str]) -> str:
     # Robokassa ResultURL recipe: MD5("OutSum:InvId:Password#2" plus every
     # custom Shp_ parameter, sorted by name, each appended as ":name=value"),
     # uppercase hex. (MD5 is the processor's contract, not our choice.)
-    parts = [out_sum, inv_id, _payment_secret("ROBOKASSA_PASSWORD2")]
+    parts = [out_sum, inv_id, _payment_secret("ROBOKASSA_PASSWORD_2")]
     parts.extend(f"{name}={shp[name]}" for name in sorted(shp))
     return hashlib.md5(":".join(parts).encode("utf-8")).hexdigest().upper()
 
@@ -1316,7 +1319,7 @@ async def _activate_claim_from_payment(claim_id: int, source: str, amount: objec
 
 
 async def _payment_webhook_robokassa(params: dict[str, str]) -> Response:
-    if not _payment_secret("ROBOKASSA_PASSWORD2"):
+    if not _payment_secret("ROBOKASSA_PASSWORD_2"):
         return JSONResponse(status_code=503, content={"detail": "payment gateway not configured"})
     out_sum = params.get("OutSum", "")
     inv_id = params.get("InvId", "")
@@ -1427,6 +1430,64 @@ async def payment_webhook(request: Request) -> Response:
                 parse_qsl(body.decode("utf-8", "replace"), keep_blank_values=True)
             )
     return await _payment_webhook_robokassa(params)
+
+
+# Robokassa KZ payment form. The quick-start doc also lists /Merchant/Payment/
+# Index, but a live signed probe 404s on it while this classic path renders the
+# checkout page; ROBOKASSA_PAY_URL overrides it if the cabinet changes.
+ROBOKASSA_PAY_URL = (
+    os.environ.get("ROBOKASSA_PAY_URL")
+    or "https://auth.robokassa.kz/Merchant/Index.aspx"
+).strip()
+
+
+@app.get("/api/premium/payment-link")
+async def premium_payment_link(session_id: str = "") -> dict[str, object]:
+    """Signed Robokassa checkout URL for the session's claim.
+
+    The link MD5 is computed here, never in the browser: Password #1 is a
+    merchant secret, and shipping it client-side would let anyone forge
+    payment links under our MerchantLogin (arbitrary amounts, phishing
+    success-URLs). InvId carries the claim id, which is how the webhook maps
+    an accepted payment back to this claim.
+    """
+    merchant = _payment_secret("ROBOKASSA_MERCHANT_ID")
+    password1 = _payment_secret("ROBOKASSA_PASSWORD_1")
+    if not (merchant and password1):
+        raise HTTPException(status_code=503, detail="payment gateway not configured")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+    async with AsyncSessionLocal() as db:
+        row = (
+            await db.execute(
+                select(PremiumClaim.claim_id, PremiumClaim.status)
+                .where(PremiumClaim.session_id == session_id)
+                .order_by(PremiumClaim.claim_id.desc())
+                .limit(1)
+            )
+        ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="claim not found")
+    claim_id, status = row
+    if status == "active":
+        raise HTTPException(status_code=409, detail="claim already active")
+    price = _premium_price()
+    out_sum = f"{price if price > 0 else 9900.0:.2f}"
+    inv_id = str(claim_id)
+    signature = hashlib.md5(
+        f"{merchant}:{out_sum}:{inv_id}:{password1}".encode("utf-8")
+    ).hexdigest()
+    payment_url = ROBOKASSA_PAY_URL + "?" + urlencode(
+        {
+            "MerchantLogin": merchant,
+            "OutSum": out_sum,
+            "InvId": inv_id,
+            "Description": "SmartLawyer Premium — 1 месяц",
+            "SignatureValue": signature,
+            "Encoding": "utf-8",
+        }
+    )
+    return {"payment_url": payment_url, "claim_id": claim_id, "out_sum": out_sum}
 
 
 # --- Premium contract risk analysis (file upload) -----------------------------

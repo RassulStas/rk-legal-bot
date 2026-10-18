@@ -16,14 +16,16 @@ import sqlite3
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 BACKEND_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 _TMP = Path(tempfile.mkdtemp(prefix="payhook-selftest-"))
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP / 'chat.db'}"
-os.environ["ROBOKASSA_PASSWORD2"] = "selftest-password-2"
+os.environ["ROBOKASSA_MERCHANT_ID"] = "selftest-merchant"
+os.environ["ROBOKASSA_PASSWORD_1"] = "selftest-password-1"
+os.environ["ROBOKASSA_PASSWORD_2"] = "selftest-password-2"
 os.environ["PAYMENT_WEBHOOK_SECRET"] = "selftest-hmac-key"
 os.environ["PREMIUM_PRICE"] = "9900"
 
@@ -39,7 +41,7 @@ main.ingest_documents = lambda: 0
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-ROBOKASSA_PASSWORD2 = os.environ["ROBOKASSA_PASSWORD2"]
+ROBOKASSA_PASSWORD_2 = os.environ["ROBOKASSA_PASSWORD_2"]
 HMAC_KEY = os.environ["PAYMENT_WEBHOOK_SECRET"].encode()
 WEBHOOK = "/api/v1/payment/webhook"
 
@@ -47,7 +49,7 @@ WEBHOOK = "/api/v1/payment/webhook"
 def robokassa_form(out_sum: str, inv_id: str, shp: dict[str, str] | None = None) -> dict[str, str]:
     shp = shp or {}
     signature = hashlib.md5(
-        ":".join([out_sum, inv_id, ROBOKASSA_PASSWORD2] + [f"{k}={shp[k]}" for k in sorted(shp)]).encode()
+        ":".join([out_sum, inv_id, ROBOKASSA_PASSWORD_2] + [f"{k}={shp[k]}" for k in sorted(shp)]).encode()
     ).hexdigest().upper()
     return {"OutSum": out_sum, "InvId": inv_id, "SignatureValue": signature, **shp}
 
@@ -101,6 +103,27 @@ with TestClient(main.app) as client:
         claim_ids[key] = cur.lastrowid
     db.commit()
 
+    r = client.get("/api/premium/payment-link", params={"session_id": "payhook-sess-inv"})
+    link_ok = r.status_code == 200 and isinstance(r.json().get("payment_url"), str)
+    link_sig_ok = False
+    if link_ok:
+        q = parse_qs(urlparse(r.json()["payment_url"]).query)
+        expected = hashlib.md5(
+            "selftest-merchant:9900.00:"
+            f"{claim_ids['inv']}:selftest-password-1".encode()
+        ).hexdigest()
+        link_sig_ok = (
+            q.get("MerchantLogin") == ["selftest-merchant"]
+            and q.get("OutSum") == ["9900.00"]
+            and q.get("InvId") == [str(claim_ids["inv"])]
+            and q.get("SignatureValue") == [expected]
+        )
+    check(
+        "PL-1 payment-link returns a correctly signed checkout URL",
+        link_ok and link_sig_ok,
+        f"HTTP {r.status_code}",
+    )
+
     inv_id = str(claim_ids["inv"])
     form = robokassa_form("9900.00", inv_id)
     r = client.post(WEBHOOK, data=urlencode(form))
@@ -148,9 +171,9 @@ with TestClient(main.app) as client:
     r = client.post(WEBHOOK, data=urlencode(robokassa_form("9900", "999999")))
     check("06 unknown claim id -> 404", r.status_code == 404, f"HTTP {r.status_code}")
 
-    saved = os.environ.pop("ROBOKASSA_PASSWORD2")
+    saved = os.environ.pop("ROBOKASSA_PASSWORD_2")
     r = client.post(WEBHOOK, data=urlencode(robokassa_form("9900", str(claim_ids["json"]))))
-    os.environ["ROBOKASSA_PASSWORD2"] = saved
+    os.environ["ROBOKASSA_PASSWORD_2"] = saved
     check("07 unconfigured secret -> 503 (fail closed)", r.status_code == 503, f"HTTP {r.status_code}")
 
     body = f'{{"Status":"PAID","Amount":9900,"ClaimId":{claim_ids["json"]}}}'
@@ -212,6 +235,19 @@ with TestClient(main.app) as client:
         r.status_code == 200 and r.json().get("status") == "active",
         f"HTTP {r.status_code}, body {r.text}",
     )
+
+    r = client.get("/api/premium/payment-link", params={"session_id": "payhook-sess-inv"})
+    check(
+        "PL-2 active claim gets no checkout link (409)",
+        r.status_code == 409,
+        f"HTTP {r.status_code}",
+    )
+    r = client.get("/api/premium/payment-link", params={"session_id": "no-such-session"})
+    check("PL-3 unknown session -> 404", r.status_code == 404, f"HTTP {r.status_code}")
+    saved_merchant = os.environ.pop("ROBOKASSA_MERCHANT_ID")
+    r = client.get("/api/premium/payment-link", params={"session_id": "payhook-sess-phone"})
+    os.environ["ROBOKASSA_MERCHANT_ID"] = saved_merchant
+    check("PL-4 unconfigured merchant -> 503", r.status_code == 503, f"HTTP {r.status_code}")
 
     db.close()
 
