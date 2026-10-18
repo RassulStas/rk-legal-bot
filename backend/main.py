@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -12,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import parse_qsl
 
 # Modules here (database, docx_service, models, parser_service, rag_service,
 # security_logger) are flat inside backend/. Put this directory on sys.path so
@@ -1197,6 +1199,234 @@ async def telegram_webhook(
     if isinstance(message, dict):
         await _handle_bot_message(message)
     return {"ok": True}
+
+
+# --- Automated payment gateway webhook (Robokassa / PaySelection) --------------
+# Replaces the manual P2P approval loop for acquiring processors that serve
+# individual merchants: on a successful payment the processor calls this URL,
+# the per-scheme merchant signature proves the notification is genuine, and the
+# matching claim flips to 'active' instantly — no operator tap required. The
+# Telegram cards keep working as the manual fallback for Kaspi claims.
+#
+# Secrets (server .env only, never committed):
+#   ROBOKASSA_PASSWORD2     merchant "password #2" used to sign ResultURL calls
+#   PAYMENT_WEBHOOK_SECRET  HMAC-SHA256 key for JSON callbacks (signed header
+#                           X-Payment-Signature = hex hmac-sha256(raw body))
+#   PREMIUM_PRICE           expected payment amount in tenge (default 9900;
+#                           0 disables the amount floor)
+# Until the matching secret is set the endpoint answers 503, so a deployment
+# can never activate Premium off unsigned traffic.
+
+_PAYMENT_SUCCESS_STATES = {"paid", "success", "successful", "confirmed", "completed", "3"}
+_PAYMENT_NOTIFY_TASKS: set[asyncio.Task] = set()
+
+
+def _payment_secret(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
+def _premium_price() -> float:
+    raw = os.environ.get("PREMIUM_PRICE", "9900").strip() or "9900"
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Payment gateway: invalid PREMIUM_PRICE %r — amount check disabled", raw)
+        return 0.0
+
+
+def _amount_ok(amount_raw: object) -> bool:
+    """Tariff floor: the signature is the security gate; this only catches a
+    mispriced payment link so a below-tariff payment never activates Premium."""
+    price = _premium_price()
+    if price <= 0:
+        return True
+    try:
+        amount = float(str(amount_raw).replace(",", ".").replace(" ", ""))
+    except (TypeError, ValueError):
+        return True  # notification carries no amount — nothing to compare
+    if amount + 0.005 >= price:
+        return True
+    logger.warning("Payment gateway: payment amount %s below tariff %.2f", amount, price)
+    return False
+
+
+def _robokassa_md5(out_sum: str, inv_id: str, shp: dict[str, str]) -> str:
+    # Robokassa ResultURL recipe: MD5("OutSum:InvId:Password#2" plus every
+    # custom Shp_ parameter, sorted by name, each appended as ":name=value"),
+    # uppercase hex. (MD5 is the processor's contract, not our choice.)
+    parts = [out_sum, inv_id, _payment_secret("ROBOKASSA_PASSWORD2")]
+    parts.extend(f"{name}={shp[name]}" for name in sorted(shp))
+    return hashlib.md5(":".join(parts).encode("utf-8")).hexdigest().upper()
+
+
+async def _resolve_claim_id(claim_raw: object, phone_raw: object) -> int | None:
+    claim_text = str(claim_raw or "").strip()
+    if claim_text.isdigit():
+        return int(claim_text)
+    phone = _normalize_kz_phone(str(phone_raw or "")) or str(phone_raw or "").strip()
+    if not phone:
+        return None
+    async with AsyncSessionLocal() as db:
+        return await db.scalar(
+            select(PremiumClaim.claim_id)
+            .where(PremiumClaim.phone == phone)
+            .order_by(PremiumClaim.claim_id.desc())
+            .limit(1)
+        )
+
+
+async def _activate_claim_from_payment(claim_id: int, source: str, amount: object) -> str:
+    """Flip a claim to 'active' on a signature-verified payment (idempotent)."""
+    async with AsyncSessionLocal() as db:
+        claim = await db.get(PremiumClaim, claim_id)
+        if claim is None:
+            return "claim_not_found"
+        if claim.status == "active":
+            return "already_active"
+        previous = claim.status
+        claim.status = "active"
+        await db.commit()
+        phone = claim.phone
+    await _activate_user_premium(phone)
+    logger.info(
+        "Payment gateway: claim %s (%s) %s -> active via %s (amount=%s)",
+        claim_id,
+        phone,
+        previous,
+        source,
+        amount,
+    )
+    if previous == "rejected":
+        logger.warning(
+            "Payment gateway: claim %s auto-activated although it was previously "
+            "rejected — signed successful payment arrived",
+            claim_id,
+        )
+    # Owner visibility into automated money flow: best-effort, never blocks
+    # the processor handshake.
+    task = asyncio.create_task(
+        telegram_bot.notify_owner(
+            f"✅ Авто-оплата: заявка #{claim_id} активирована ({source}, "
+            f"сумма {amount if amount not in (None, '') else '—'}). Клиент: {phone}"
+        )
+    )
+    _PAYMENT_NOTIFY_TASKS.add(task)
+    task.add_done_callback(_PAYMENT_NOTIFY_TASKS.discard)
+    return "activated"
+
+
+async def _payment_webhook_robokassa(params: dict[str, str]) -> Response:
+    if not _payment_secret("ROBOKASSA_PASSWORD2"):
+        return JSONResponse(status_code=503, content={"detail": "payment gateway not configured"})
+    out_sum = params.get("OutSum", "")
+    inv_id = params.get("InvId", "")
+    signature = params.get("SignatureValue", "")
+    shp = {k: v for k, v in params.items() if k.startswith("Shp_")}
+    if not (out_sum and inv_id and signature):
+        return JSONResponse(
+            status_code=400, content={"detail": "missing OutSum/InvId/SignatureValue"}
+        )
+    expected = _robokassa_md5(out_sum, inv_id, shp)
+    if not hmac.compare_digest(signature.strip().upper(), expected):
+        log_security_event(
+            "payment-webhook", VIOLATION_UNAUTHORIZED_PAYLOAD, detail="robokassa_bad_signature"
+        )
+        logger.warning(
+            "Payment gateway: rejected Robokassa notification InvId=%s — bad signature", inv_id
+        )
+        return JSONResponse(status_code=400, content={"detail": "invalid signature"})
+    if not _amount_ok(out_sum):
+        return JSONResponse(status_code=402, content={"detail": "payment amount below tariff"})
+    claim_id = await _resolve_claim_id(shp.get("Shp_claim_id") or inv_id, shp.get("Shp_phone"))
+    if claim_id is None:
+        return JSONResponse(status_code=404, content={"detail": "claim not found"})
+    outcome = await _activate_claim_from_payment(claim_id, "Robokassa", out_sum)
+    if outcome == "claim_not_found":
+        return JSONResponse(status_code=404, content={"detail": "claim not found"})
+    # Robokassa requires the literal OK{InvId} body or it keeps re-delivering.
+    return Response(content=f"OK{inv_id}", media_type="text/plain")
+
+
+async def _payment_webhook_json(request: Request) -> JSONResponse:
+    if not _payment_secret("PAYMENT_WEBHOOK_SECRET"):
+        return JSONResponse(status_code=503, content={"detail": "payment gateway not configured"})
+    raw = await request.body()
+    signature = (request.headers.get("x-payment-signature") or "").strip()
+    if not signature:
+        return JSONResponse(
+            status_code=400, content={"detail": "missing X-Payment-Signature header"}
+        )
+    expected = hmac.new(
+        _payment_secret("PAYMENT_WEBHOOK_SECRET").encode("utf-8"), raw, hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(signature.lower(), expected):
+        log_security_event(
+            "payment-webhook", VIOLATION_UNAUTHORIZED_PAYLOAD, detail="json_bad_signature"
+        )
+        logger.warning("Payment gateway: rejected JSON notification — bad signature")
+        return JSONResponse(status_code=400, content={"detail": "invalid signature"})
+    try:
+        payload = json.loads(raw or b"{}")
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "invalid json"})
+    if not isinstance(payload, dict):
+        return JSONResponse(status_code=400, content={"detail": "unexpected payload"})
+
+    state = ""
+    for key in ("Status", "State", "PaymentStatus", "OperationStatus", "TransactionStatus"):
+        if key in payload:
+            state = str(payload[key]).strip().lower()
+            break
+    if state not in _PAYMENT_SUCCESS_STATES:
+        # Status notifications we do not act on are acknowledged, not failed.
+        return JSONResponse(content={"activated": False, "reason": "payment not in success state"})
+    amount = payload.get("Amount", payload.get("OutSum"))
+    if not _amount_ok(amount):
+        return JSONResponse(status_code=402, content={"detail": "payment amount below tariff"})
+    claim_raw = (
+        payload.get("ClaimId")
+        or payload.get("claim_id")
+        or payload.get("OrderId")
+        or payload.get("order_id")
+    )
+    phone_raw = (
+        payload.get("Phone")
+        or payload.get("phone")
+        or payload.get("CustomerPhone")
+        or payload.get("customerPhone")
+    )
+    claim_id = await _resolve_claim_id(claim_raw, phone_raw)
+    if claim_id is None:
+        return JSONResponse(status_code=404, content={"detail": "claim not found"})
+    outcome = await _activate_claim_from_payment(claim_id, "gateway-JSON", amount)
+    if outcome == "claim_not_found":
+        return JSONResponse(status_code=404, content={"detail": "claim not found"})
+    return JSONResponse(
+        content={"activated": outcome == "activated", "claim_id": claim_id, "outcome": outcome}
+    )
+
+
+@app.api_route("/api/v1/payment/webhook", methods=["POST", "GET"])
+async def payment_webhook(request: Request) -> Response:
+    """Merchant result URL for automated Premium activation.
+
+    Two payload conventions on one endpoint:
+    - form-encoded (Robokassa ResultURL, POST or GET) → MD5 signature in the
+      SignatureValue field, answered with the literal "OK{InvId}" body;
+    - JSON (PaySelection-style) → HMAC-SHA256 of the raw body in the
+      X-Payment-Signature header, answered with a JSON status object.
+    """
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        return await _payment_webhook_json(request)
+    params: dict[str, str] = dict(request.query_params)
+    if request.method == "POST":
+        body = await request.body()
+        if body:
+            params.update(
+                parse_qsl(body.decode("utf-8", "replace"), keep_blank_values=True)
+            )
+    return await _payment_webhook_robokassa(params)
 
 
 # --- Premium contract risk analysis (file upload) -----------------------------

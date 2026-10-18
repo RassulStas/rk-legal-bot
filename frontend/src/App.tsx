@@ -122,9 +122,11 @@ function App() {
     void refreshProfile()
   }, [refreshProfile])
 
+  // 1-second cadence while a claim is pending: the payment webhook flips the
+  // claim server-side, and this poll is what unblurs the teaser within ~1s.
   useEffect(() => {
     if (claimStatus !== 'pending') return
-    const timer = setInterval(refreshClaimStatus, 20_000)
+    const timer = setInterval(refreshClaimStatus, 1_000)
     return () => clearInterval(timer)
   }, [claimStatus, refreshClaimStatus])
 
@@ -150,6 +152,17 @@ function App() {
   }
 
   const premiumActive = claimStatus === 'active' || Boolean(profile?.is_premium)
+
+  // Payment auto-activation path: when the polled claim status flips to
+  // 'active', any blurred teaser unblurs — no auth or page reload needed.
+  useEffect(() => {
+    if (!premiumActive) return
+    setMessages((prev) =>
+      prev.some((m) => m.locked)
+        ? prev.map((m) => (m.locked ? { ...m, locked: false } : m))
+        : prev,
+    )
+  }, [premiumActive])
 
   const sendMessage = useCallback(
     async (text: string) => {

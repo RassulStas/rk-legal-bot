@@ -147,6 +147,18 @@ async def send_message(chat_id: Any, text: str) -> None:
     await _call("sendMessage", {"chat_id": chat_id, "text": text})
 
 
+async def notify_owner(text: str) -> None:
+    """Best-effort text message to the owner chat (payment auto-activation etc.).
+
+    Never raises; with no owner chat configured this is a no-op, so callers can
+    fire-and-forget without guarding the payment handshake.
+    """
+    chat = _env("TELEGRAM_OWNER_CHAT_ID")
+    if not chat:
+        return
+    await _call("sendMessage", {"chat_id": chat, "text": text})
+
+
 async def replace_claim_card(message_id: int, text: str) -> None:
     """Replace the claim card with the decision result (drops the buttons)."""
     await _call(
