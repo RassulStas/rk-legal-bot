@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { PREMIUM_PLAN } from '../config/premium'
+import { CHECKOUT_COPY, PREMIUM_PLAN, getKaspiPhone } from '../config/premium'
 
 export type ClaimStatus = 'none' | 'pending' | 'active'
 
@@ -48,11 +48,20 @@ function PremiumModal({
   const [phone, setPhone] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [checkoutBusy, setCheckoutBusy] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Raw requisites are never rendered; the platform only changes WHICH action
+  // button the checkout card shows. Coarse pointer + mobile UA = phone/tablet.
+  const [isMobile] = useState(
+    () =>
+      typeof navigator !== 'undefined' &&
+      (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+        (navigator.maxTouchPoints > 1 &&
+          typeof window !== 'undefined' &&
+          window.matchMedia('(pointer: coarse)').matches)),
+  )
 
   useEffect(() => {
     if (!open) return
@@ -92,29 +101,12 @@ function PremiumModal({
     toastTimer.current = setTimeout(() => setToast(null), 2800)
   }
 
-  // Robokassa checkout: the signed payment URL is built server-side
-  // (/api/premium/payment-link) so the merchant password never ships in the
-  // JS bundle; this button just opens the processor's payment form.
-  async function openCheckout() {
-    if (checkoutBusy) return
-    setCheckoutBusy(true)
+  async function copyRequisites() {
     try {
-      const res = await fetch(
-        `${apiBase}/api/premium/payment-link?session_id=${encodeURIComponent(sessionId)}`,
-        { headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined },
-      )
-      const body = (await res.json().catch(() => null)) as { payment_url?: string } | null
-      if (!res.ok || !body?.payment_url) {
-        showToast('Платёжный шлюз временно недоступен — попробуйте ещё раз через минуту.')
-        return
-      }
-      const win = window.open(body.payment_url, '_blank', 'noopener')
-      if (!win) window.location.href = body.payment_url
-      showToast('Открываем страницу оплаты — Premium активируется автоматически сразу после платежа.')
+      await navigator.clipboard.writeText(getKaspiPhone())
+      showToast(CHECKOUT_COPY.toast)
     } catch {
-      showToast('Проверьте подключение к интернету и попробуйте снова.')
-    } finally {
-      setCheckoutBusy(false)
+      showToast('Не удалось скопировать автоматически — разрешите доступ к буферу обмена.')
     }
   }
 
@@ -268,46 +260,17 @@ function PremiumModal({
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z"
+                    d="M12 8v4l2.5 2.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                   />
                 </svg>
               </span>
               <h3 className="mt-3 text-lg font-bold text-slate-800">
-                Оформление подписки
+                Заявка на проверке
               </h3>
               <p className="mt-1 max-w-sm text-sm leading-snug text-slate-500">
-                Оплата 9,900 ₸ картой Visa / Mastercard или через Kaspi на
-                защищённой странице Robokassa. Premium активируется автоматически
-                сразу после подтверждения платежа — эта вкладка обновится сама.
+                Мы проверим поступление перевода с вашего номера и активируем
+                Premium-доступ. Обычно проверка занимает не более 24 часов.
               </p>
-              <button
-                type="button"
-                onClick={openCheckout}
-                disabled={checkoutBusy}
-                className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-amber-400 to-amber-500 py-3.5 text-sm font-bold text-navy-950 shadow-md shadow-amber-400/30 transition-all duration-200 hover:from-amber-300 hover:to-amber-400 hover:shadow-lg active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {checkoutBusy ? (
-                  <>
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.5"
-                      className="h-4 w-4 animate-spin"
-                      aria-hidden="true"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        d="M12 3a9 9 0 019 9"
-                        className="opacity-80"
-                      />
-                    </svg>
-                    Открываем оплату...
-                  </>
-                ) : (
-                  '[ 💳 Оплатить картой Visa / Mastercard / Kaspi ]'
-                )}
-              </button>
               <button
                 type="button"
                 onClick={() => setEditing(true)}
@@ -317,66 +280,144 @@ function PremiumModal({
               </button>
             </div>
           ) : (
-            <div>
-              <label
-                htmlFor="premium-phone"
-                className="block text-sm font-semibold text-slate-700"
-              >
-                Введите ваш номер телефона — на него будет привязана подписка
-              </label>
-              <input
-                ref={inputRef}
-                id="premium-phone"
-                type="tel"
-                inputMode="tel"
-                autoComplete="tel"
-                value={phone}
-                onChange={(e) => {
-                  setPhone(e.target.value)
-                  if (error) setError(null)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') submit()
-                }}
-                placeholder={PHONE_PLACEHOLDER}
-                className={`mt-2 w-full rounded-xl border bg-white px-3.5 py-3 text-sm text-slate-800 shadow-sm transition-all placeholder:text-slate-400 focus:outline-none focus:ring-2 ${
-                  error
-                    ? 'border-red-400 focus:border-red-400 focus:ring-red-100'
-                    : 'border-slate-300 focus:border-navy-500 focus:ring-navy-100'
-                }`}
-              />
-              {error && (
-                <p className="mt-1.5 text-xs font-medium text-red-500">{error}</p>
-              )}
-              <button
-                type="button"
-                onClick={submit}
-                disabled={submitting}
-                className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-amber-400 to-amber-500 py-3.5 text-sm font-bold text-navy-950 shadow-md shadow-amber-400/30 transition-all duration-200 hover:from-amber-300 hover:to-amber-400 hover:shadow-lg active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {submitting ? (
-                  <>
+            <>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#F14635]/10 px-2 py-0.5 text-[11px] font-bold tracking-wide text-[#F14635]">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    className="h-3.5 w-3.5"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M13 5l7 7-7 7M5 12h15"
+                    />
+                  </svg>
+                  Kaspi.kz
+                </span>
+                <h3 className="mt-3 text-sm font-bold text-navy-900">
+                  {CHECKOUT_COPY.title}
+                </h3>
+                {isMobile ? (
+                  <button
+                    type="button"
+                    onClick={copyRequisites}
+                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#F14635] py-3.5 text-sm font-bold text-white shadow-md shadow-[#F14635]/30 transition-all duration-200 hover:brightness-110 active:scale-[0.99]"
+                  >
                     <svg
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
-                      strokeWidth="2.5"
-                      className="h-4 w-4 animate-spin"
+                      strokeWidth="2"
+                      className="h-4 w-4"
                       aria-hidden="true"
                     >
                       <path
                         strokeLinecap="round"
-                        d="M12 3a9 9 0 019 9"
-                        className="opacity-80"
+                        strokeLinejoin="round"
+                        d="M13 5l7 7-7 7M5 12h15"
                       />
                     </svg>
-                    Отправка заявки...
-                  </>
+                    {CHECKOUT_COPY.mobileButton}
+                  </button>
                 ) : (
-                  'Перейти к оплате'
+                  <>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                      {CHECKOUT_COPY.desktopLead}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={copyRequisites}
+                      className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-navy-900 py-3 text-sm font-bold text-white shadow-md shadow-navy-900/20 transition-all duration-200 hover:bg-navy-800 active:scale-[0.99]"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        className="h-4 w-4"
+                        aria-hidden="true"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M8 7V6a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 012 2h-1M6 8h8a2 2 0 012 2v8a2 2 0 01-2 2H6a2 2 0 01-2-2v-8a2 2 0 012-2z"
+                        />
+                      </svg>
+                      {CHECKOUT_COPY.desktopButton}
+                    </button>
+                  </>
                 )}
-              </button>
-            </div>
+                  <p className="mt-3 text-sm leading-relaxed text-slate-500">
+                    {CHECKOUT_COPY.note}
+                  </p>
+              </div>
+
+              <div className="mt-5">
+                <label
+                  htmlFor="premium-phone"
+                  className="block text-sm font-semibold text-slate-700"
+                  >
+                    Введите ваш номер телефона, с которого совершена оплата
+                  </label>
+                <input
+                  ref={inputRef}
+                  id="premium-phone"
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  value={phone}
+                  onChange={(e) => {
+                    setPhone(e.target.value)
+                    if (error) setError(null)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') submit()
+                  }}
+                  placeholder={PHONE_PLACEHOLDER}
+                  className={`mt-2 w-full rounded-xl border bg-white px-3.5 py-3 text-sm text-slate-800 shadow-sm transition-all placeholder:text-slate-400 focus:outline-none focus:ring-2 ${
+                    error
+                      ? 'border-red-400 focus:border-red-400 focus:ring-red-100'
+                      : 'border-slate-300 focus:border-navy-500 focus:ring-navy-100'
+                  }`}
+                />
+                {error && (
+                  <p className="mt-1.5 text-xs font-medium text-red-500">{error}</p>
+                )}
+                <button
+                  type="button"
+                  onClick={submit}
+                  disabled={submitting}
+                  className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-amber-400 to-amber-500 py-3.5 text-sm font-bold text-navy-950 shadow-md shadow-amber-400/30 transition-all duration-200 hover:from-amber-300 hover:to-amber-400 hover:shadow-lg active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {submitting ? (
+                    <>
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        className="h-4 w-4 animate-spin"
+                        aria-hidden="true"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          d="M12 3a9 9 0 019 9"
+                          className="opacity-80"
+                        />
+                      </svg>
+                      Отправка заявки...
+                    </>
+                  ) : (
+                    'Активировать Premium'
+                  )}
+                </button>
+              </div>
+            </>
           )}
         </div>
 
