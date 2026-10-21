@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { LegalDocId } from '../config/legal_docs'
 import { DISCLAIMER, UI_STRINGS, type Language } from '../i18n'
-
-const ACCEPTED_EXTS = ['.docx', '.doc', '.pdf', '.txt']
-const MAX_FILE_BYTES = 10 * 1024 * 1024
+import { ACCEPTED_EXTS, validateUpload } from '../uploads'
 
 type ChatInputProps = {
   language: Language
   disabled: boolean
   premiumActive: boolean
+  // A quick-start chip tap lands here: the prompt is written into the textarea
+  // rather than sent, so an accidental tap cannot burn the visitor's one free
+  // anonymous message. The nonce re-triggers the effect on a repeat tap.
+  prefill: { text: string; nonce: number } | null
   onSend: (message: string) => void
   onAnalyzeContract: (file: File) => void
   onOpenPremium: () => void
@@ -24,6 +26,7 @@ function ChatInput({
   language,
   disabled,
   premiumActive,
+  prefill,
   onSend,
   onAnalyzeContract,
   onOpenPremium,
@@ -37,6 +40,18 @@ function ChatInput({
   useEffect(() => {
     textareaRef.current?.focus()
   }, [])
+
+  // Declared before the auto-resize effect on purpose: writing .value
+  // imperatively does not re-render, so this commit's resize pass is the only
+  // chance to grow the box around a multi-line starter prompt.
+  useEffect(() => {
+    if (!prefill) return
+    const el = textareaRef.current
+    if (!el) return
+    el.value = prefill.text
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [prefill])
 
   useEffect(() => {
     const el = textareaRef.current
@@ -78,14 +93,13 @@ function ChatInput({
     const file = files?.[0]
     if (fileInputRef.current) fileInputRef.current.value = ''
     if (!file) return
-    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
-    if (!ACCEPTED_EXTS.includes(ext)) {
-      setAttachError('.docx, .doc, .pdf, .txt')
-      setPendingFile(null)
-      return
-    }
-    if (file.size > MAX_FILE_BYTES) {
-      setAttachError(UI_STRINGS[language].fileTooLarge)
+    const rejection = validateUpload(file)
+    if (rejection) {
+      setAttachError(
+        rejection === 'size'
+          ? UI_STRINGS[language].fileTooLarge
+          : ACCEPTED_EXTS.join(', '),
+      )
       setPendingFile(null)
       return
     }
@@ -144,7 +158,7 @@ function ChatInput({
           <input
             ref={fileInputRef}
             type="file"
-            accept=".docx,.doc,.pdf,.txt"
+            accept={ACCEPTED_EXTS.join(',')}
             className="hidden"
             onChange={(e) => handleFileChange(e.target.files)}
           />

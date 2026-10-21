@@ -3,6 +3,7 @@ import AdminPanel from './components/AdminPanel'
 import AuthForm from './components/AuthForm'
 import AuthModal from './components/AuthModal'
 import ChatInput from './components/ChatInput'
+import EmptyState from './components/EmptyState'
 import Header from './components/Header'
 import LegalDocsModal from './components/LegalDocsModal'
 import MessageBubble, { FREE_PREVIEW_CHARS, type ChatMessage } from './components/MessageBubble'
@@ -48,6 +49,7 @@ function App() {
   const [unlockDismissed, setUnlockDismissed] = useState(false)
   const [claimStatus, setClaimStatus] = useState<ClaimStatus>('none')
   const [legalDoc, setLegalDoc] = useState<LegalDocId | null>(null)
+  const [starter, setStarter] = useState<{ text: string; nonce: number } | null>(null)
   const [route, setRoute] = useState(getRoute)
   const [userToken, setUserToken] = useState(() => getUserToken())
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -157,6 +159,13 @@ function App() {
   }
 
   const premiumActive = claimStatus === 'active' || Boolean(profile?.is_premium)
+
+  // Only the greeting is in the list and no starter prompt has been picked, so
+  // the landing hero owns the screen. A chip tap sets `starter`, which hides the
+  // hero and reveals that prompt prefilled in the input bar — prefilled, not
+  // sent, because an accidental tap must not burn the one free anonymous chat.
+  const showEmptyState =
+    !starter && messages.length === 1 && messages[0].role === 'assistant'
 
   // Payment auto-activation path: when the polled claim status flips to
   // 'active', any blurred teaser unblurs — no auth or page reload needed.
@@ -427,61 +436,82 @@ function App() {
         ref={scrollRef}
         className="flex-1 overflow-y-auto scroll-smooth bg-white"
       >
-        <div className="mx-auto flex max-w-4xl flex-col gap-5 px-4 py-6 sm:px-6">
-          {messages.map((message, i) => (
-            <div key={i} className="flex flex-col">
-              <MessageBubble
-                message={message}
-                streaming={isStreaming && i === messages.length - 1}
-                copyLabels={{
-                  copy: UI_STRINGS[language].copyAnswer,
-                  copied: UI_STRINGS[language].copied,
-                  failed: UI_STRINGS[language].copyFailed,
-                }}
-              >
-                {message.locked && !userToken && !unlockDismissed && (
-                  <AuthForm
-                    apiBase={API_BASE}
-                    sessionId={getSessionId()}
-                    language={language}
-                    title={UI_STRINGS[language].unlockTitle}
-                    lead={UI_STRINGS[language].unlockLead}
-                    onClose={() => setUnlockDismissed(true)}
-                    onAuthenticated={unlockAfterAuth}
-                  />
-                )}
-              </MessageBubble>
-              {message.locked && !userToken && unlockDismissed && (
-                <button
-                  type="button"
-                  onClick={() => setUnlockDismissed(false)}
-                  className="ml-11 mt-1 flex w-fit items-center gap-1.5 rounded-full border border-navy-200 bg-navy-50 px-4 py-2 text-xs font-bold text-navy-700 transition-colors hover:bg-navy-100"
+        {showEmptyState ? (
+          <div className="mx-auto flex min-h-full max-w-4xl flex-col px-4 py-6 sm:px-6">
+            <EmptyState
+              language={language}
+              premiumActive={premiumActive}
+              onAnalyzeContract={analyzeContract}
+              onOpenPremium={() => {
+                refreshClaimStatus()
+                setPremiumOpen(true)
+              }}
+              onPickStarter={(prompt) =>
+                setStarter((prev) => ({
+                  text: prompt,
+                  nonce: (prev?.nonce ?? 0) + 1,
+                }))
+              }
+            />
+          </div>
+        ) : (
+          <div className="mx-auto flex max-w-4xl flex-col gap-5 px-4 py-6 sm:px-6">
+            {messages.map((message, i) => (
+              <div key={i} className="flex flex-col">
+                <MessageBubble
+                  message={message}
+                  streaming={isStreaming && i === messages.length - 1}
+                  copyLabels={{
+                    copy: UI_STRINGS[language].copyAnswer,
+                    copied: UI_STRINGS[language].copied,
+                    failed: UI_STRINGS[language].copyFailed,
+                  }}
                 >
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    className="h-3.5 w-3.5"
-                    aria-hidden="true"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                  {message.locked && !userToken && !unlockDismissed && (
+                    <AuthForm
+                      apiBase={API_BASE}
+                      sessionId={getSessionId()}
+                      language={language}
+                      title={UI_STRINGS[language].unlockTitle}
+                      lead={UI_STRINGS[language].unlockLead}
+                      onClose={() => setUnlockDismissed(true)}
+                      onAuthenticated={unlockAfterAuth}
                     />
-                  </svg>
-                  {UI_STRINGS[language].unlockShowFull}
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
+                  )}
+                </MessageBubble>
+                {message.locked && !userToken && unlockDismissed && (
+                  <button
+                    type="button"
+                    onClick={() => setUnlockDismissed(false)}
+                    className="ml-11 mt-1 flex w-fit items-center gap-1.5 rounded-full border border-navy-200 bg-navy-50 px-4 py-2 text-xs font-bold text-navy-700 transition-colors hover:bg-navy-100"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      className="h-3.5 w-3.5"
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                      />
+                    </svg>
+                    {UI_STRINGS[language].unlockShowFull}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </main>
       <ChatInput
         language={language}
         disabled={isStreaming}
         premiumActive={premiumActive}
+        prefill={starter}
         onSend={sendMessage}
         onAnalyzeContract={analyzeContract}
         onOpenPremium={() => {
