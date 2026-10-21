@@ -8,6 +8,7 @@ import LegalDocsModal from './components/LegalDocsModal'
 import MessageBubble, { FREE_PREVIEW_CHARS, type ChatMessage } from './components/MessageBubble'
 import PremiumModal, { type ClaimStatus } from './components/PremiumModal'
 import ProfileDashboard from './components/ProfileDashboard'
+import { reportAttribution } from './attribution'
 import type { Profile } from './auth'
 import { authHeaders, clearUserToken, getUserToken } from './auth'
 import type { LegalDocId } from './config/legal_docs'
@@ -116,6 +117,10 @@ function App() {
     return () => {
       cancelled = true
     }
+  }, [])
+
+  useEffect(() => {
+    reportAttribution(API_BASE, getSessionId())
   }, [])
 
   useEffect(() => {

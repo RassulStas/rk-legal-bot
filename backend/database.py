@@ -49,6 +49,19 @@ _MIGRATION_COLUMNS = {
     "chat_sessions": (
         ("free_requests_left", "INTEGER NOT NULL DEFAULT 1"),
         ("last_request_date", "TEXT"),
+        # Ad attribution added 2026-10-22; all nullable so the ALTER is a no-op
+        # for the ~50 existing rows.
+        ("gclid", "TEXT"),
+        ("gad_campaign_id", "TEXT"),
+        ("gad_source", "TEXT"),
+        ("utm_source", "TEXT"),
+        ("utm_medium", "TEXT"),
+        ("utm_campaign", "TEXT"),
+        ("utm_content", "TEXT"),
+        ("utm_term", "TEXT"),
+        ("referrer", "TEXT"),
+        ("landing_query", "TEXT"),
+        ("client_ip", "TEXT"),
     ),
 }
 

@@ -338,6 +338,36 @@ class SessionLinkRequest(BaseModel):
     session_id: str = Field(min_length=8, max_length=64)
 
 
+# No max_length on the attribution fields on purpose: an over-long referrer must
+# be truncated, not rejected — a 422 here silently loses the click.
+_TRACKED_FIELDS = {
+    "gclid": 256,
+    "gad_campaign_id": 64,
+    "gad_source": 16,
+    "utm_source": 256,
+    "utm_medium": 256,
+    "utm_campaign": 256,
+    "utm_content": 256,
+    "utm_term": 256,
+    "referrer": 512,
+    "landing_query": 1024,
+}
+
+
+class SessionTrackRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=64)
+    gclid: str | None = None
+    gad_campaign_id: str | None = None
+    gad_source: str | None = None
+    utm_source: str | None = None
+    utm_medium: str | None = None
+    utm_campaign: str | None = None
+    utm_content: str | None = None
+    utm_term: str | None = None
+    referrer: str | None = None
+    landing_query: str | None = None
+
+
 def _normalize_kz_phone(raw: str) -> str | None:
     """Normalize Kazakh phone input to +7XXXXXXXXXX, or None when invalid."""
     digits = re.sub(r"\D", "", raw)
@@ -361,13 +391,32 @@ def _classify_user_message(message: str) -> str:
     return "NON_LEGAL_QUERY"
 
 
-async def _ensure_session(db, session_id: str, user_id: str | None) -> None:
+async def _ensure_session(db, session_id: str, user_id: str | None) -> ChatSession:
     existing = await db.get(ChatSession, session_id)
-    if existing is None:
-        db.add(ChatSession(session_id=session_id, user_id=user_id))
-        # Flush so a later get() in the same transaction sees the row; with
-        # autoflush off, check-then-add flows (ensure + link) would double-insert.
-        await db.flush()
+    if existing is not None:
+        return existing
+    session = ChatSession(session_id=session_id, user_id=user_id)
+    db.add(session)
+    # Flush so a later get() in the same transaction sees the row; with
+    # autoflush off, check-then-add flows (ensure + link) would double-insert.
+    await db.flush()
+    return session
+
+
+def _client_ip(request: Request) -> str | None:
+    """Real visitor IP as seen by the nginx edge.
+
+    X-Real-IP is authoritative here ($remote_addr, not client-supplied). The
+    first X-Forwarded-For hop is NOT trusted: nginx appends $remote_addr to
+    whatever the client sent, so only the last hop is ours.
+    """
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()[:64] or None
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[-1].strip()[:64] or None
+    return request.client.host if request.client else None
 
 
 # --- User accounts: phone OTP auth (mock gateway) + profile/dashboard API ----
@@ -660,6 +709,23 @@ def root() -> dict[str, str]:
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "healthy"}
+
+
+@app.post("/api/session/track")
+async def track_session(req: SessionTrackRequest, request: Request) -> dict[str, str]:
+    """Fire-and-forget landing beacon: records who sent this visitor."""
+    async with AsyncSessionLocal() as db:
+        session = await _ensure_session(db, req.session_id, None)
+        # First-touch wins — a later direct or organic visit must not erase the
+        # paid click that acquired this visitor.
+        for field, limit in _TRACKED_FIELDS.items():
+            value = (getattr(req, field) or "").strip()
+            if value and not getattr(session, field):
+                setattr(session, field, value[:limit])
+        if not session.client_ip:
+            session.client_ip = _client_ip(request)
+        await db.commit()
+    return {"status": "ok"}
 
 
 def _chunk_text(chunk) -> str | None:

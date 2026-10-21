@@ -26,6 +26,24 @@ class ChatSession(Base):
     )
     last_request_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
+    # First-touch ad attribution, written by POST /api/session/track. The row is
+    # created there rather than on first message, so visitors who bounce without
+    # typing are still counted — without it the table looked like ~11 visitors
+    # over three days while nginx saw ~350 real ad clicks.
+    gclid: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    gad_campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    gad_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    utm_source: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    utm_medium: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    utm_campaign: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    utm_content: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    utm_term: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    referrer: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Raw landing query string, so click IDs we added no column for (gbraid,
+    # wbraid, yclid, fbclid) are still recoverable.
+    landing_query: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     messages: Mapped[list["ChatMessage"]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
