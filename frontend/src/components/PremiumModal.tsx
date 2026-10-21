@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { CHECKOUT_COPY, PREMIUM_PLAN, getKaspiPhone } from '../config/premium'
+import { CHECKOUT_COPY, KASPI_PHONE, PREMIUM_PLAN } from '../config/premium'
 
 export type ClaimStatus = 'none' | 'pending' | 'active'
 
@@ -103,10 +103,12 @@ function PremiumModal({
 
   async function copyRequisites() {
     try {
-      await navigator.clipboard.writeText(getKaspiPhone())
+      await navigator.clipboard.writeText(KASPI_PHONE)
       showToast(CHECKOUT_COPY.toast)
     } catch {
-      showToast('Не удалось скопировать автоматически — разрешите доступ к буферу обмена.')
+      // In-app browsers deny the clipboard API; the number is on screen, so
+      // point at it instead of leaving the client with no way to pay.
+      showToast('Не удалось скопировать — нажмите на номер выше, чтобы выделить его вручную.')
     }
   }
 
@@ -302,56 +304,45 @@ function PremiumModal({
                 <h3 className="mt-3 text-sm font-bold text-navy-900">
                   {CHECKOUT_COPY.title}
                 </h3>
-                {isMobile ? (
-                  <button
-                    type="button"
-                    onClick={copyRequisites}
-                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#F14635] py-3.5 text-sm font-bold text-white shadow-md shadow-[#F14635]/30 transition-all duration-200 hover:brightness-110 active:scale-[0.99]"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      className="h-4 w-4"
-                      aria-hidden="true"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M13 5l7 7-7 7M5 12h15"
-                      />
-                    </svg>
-                    {CHECKOUT_COPY.mobileButton}
-                  </button>
-                ) : (
-                  <>
-                    <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                      {CHECKOUT_COPY.desktopLead}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={copyRequisites}
-                      className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-navy-900 py-3 text-sm font-bold text-white shadow-md shadow-navy-900/20 transition-all duration-200 hover:bg-navy-800 active:scale-[0.99]"
-                    >
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        className="h-4 w-4"
-                        aria-hidden="true"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M8 7V6a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 012 2h-1M6 8h8a2 2 0 012 2v8a2 2 0 01-2 2H6a2 2 0 01-2-2v-8a2 2 0 012-2z"
-                        />
-                      </svg>
-                      {CHECKOUT_COPY.desktopButton}
-                    </button>
-                  </>
+                {/* Plain text so a client can copy by hand where the clipboard API is denied. */}
+                <div className="mt-3 rounded-xl border border-dashed border-[#F14635]/40 bg-white px-3 py-2.5 text-center">
+                  <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    {CHECKOUT_COPY.requisitesLabel}
+                  </span>
+                  <span className="mt-0.5 block select-all text-lg font-extrabold tracking-tight text-navy-900">
+                    {KASPI_PHONE}
+                  </span>
+                </div>
+                {!isMobile && (
+                  <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                    {CHECKOUT_COPY.desktopLead}
+                  </p>
                 )}
+                <button
+                  type="button"
+                  onClick={copyRequisites}
+                  className={`mt-3 flex w-full items-center justify-center gap-2 rounded-2xl text-sm font-bold text-white shadow-md transition-all duration-200 active:scale-[0.99] ${
+                    isMobile
+                      ? 'bg-[#F14635] py-3.5 shadow-[#F14635]/30 hover:brightness-110'
+                      : 'bg-navy-900 py-3 shadow-navy-900/20 hover:bg-navy-800'
+                  }`}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    className="h-4 w-4 shrink-0"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M8 7V6a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 012 2h-1M6 8h8a2 2 0 012 2v8a2 2 0 01-2 2H6a2 2 0 01-2-2v-8a2 2 0 012-2z"
+                    />
+                  </svg>
+                  {CHECKOUT_COPY.copyButton}
+                </button>
                   <p className="mt-3 text-sm leading-relaxed text-slate-500">
                     {CHECKOUT_COPY.note}
                   </p>
