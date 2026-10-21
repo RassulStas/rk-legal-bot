@@ -54,6 +54,14 @@ function App() {
   const [userToken, setUserToken] = useState(() => getUserToken())
   const [profile, setProfile] = useState<Profile | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Only the greeting is in the list and no starter prompt has been picked, so
+  // the landing hero owns the screen. A chip tap sets `starter`, which hides the
+  // hero and reveals that prompt prefilled in the input bar — prefilled, not
+  // sent, because an accidental tap must not burn the one free anonymous chat.
+  const showEmptyState =
+    !starter && messages.length === 1 && messages[0].role === 'assistant'
+
   useEffect(() => {
     const onHashChange = () => setRoute(getRoute())
     window.addEventListener('hashchange', onHashChange)
@@ -62,8 +70,11 @@ function App() {
 
   useEffect(() => {
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [messages])
+    // Skipped while the landing hero is up: the mount pass would otherwise
+    // scroll the empty conversation to its bottom and push the heading out of
+    // view above the fold.
+    if (el && !showEmptyState) el.scrollTop = el.scrollHeight
+  }, [messages, showEmptyState])
 
   const refreshClaimStatus = useCallback(async () => {
     try {
@@ -159,13 +170,6 @@ function App() {
   }
 
   const premiumActive = claimStatus === 'active' || Boolean(profile?.is_premium)
-
-  // Only the greeting is in the list and no starter prompt has been picked, so
-  // the landing hero owns the screen. A chip tap sets `starter`, which hides the
-  // hero and reveals that prompt prefilled in the input bar — prefilled, not
-  // sent, because an accidental tap must not burn the one free anonymous chat.
-  const showEmptyState =
-    !starter && messages.length === 1 && messages[0].role === 'assistant'
 
   // Payment auto-activation path: when the polled claim status flips to
   // 'active', any blurred teaser unblurs — no auth or page reload needed.
