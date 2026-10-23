@@ -77,7 +77,10 @@ function PremiumModal({
   })
 
   useEffect(() => {
-    if (open && claimStatus === 'none') inputRef.current?.focus()
+    // Keep the offer (price + promo) in view on open: a plain focus() scrolls
+    // the mobile modal straight down to the phone field.
+    if (open && claimStatus === 'none')
+      inputRef.current?.focus({ preventScroll: true })
   }, [open, claimStatus])
 
   useEffect(() => {
@@ -208,9 +211,23 @@ function PremiumModal({
           </div>
           <div className="mt-4 flex items-baseline gap-2">
             <span className="text-3xl font-extrabold tracking-tight text-amber-300">
-              9,900 ₸
+              4 900 ₸
             </span>
             <span className="text-sm font-medium text-navy-200">/ месяц</span>
+          </div>
+          <div className="mt-4 flex items-start gap-2.5 rounded-2xl border border-amber-300/50 bg-amber-400/15 px-3.5 py-3 text-[13px] leading-snug text-amber-50">
+            <span aria-hidden="true" className="text-base leading-none">
+              🔥
+            </span>
+            <p>
+              <span className="font-extrabold uppercase tracking-wide text-amber-300">
+                Ограниченное предложение:
+              </span>{' '}
+              Полный безлимитный аудит договоров со скидкой 50% — всего за{' '}
+              <span className="whitespace-nowrap font-extrabold text-white">4 900 ₸</span>{' '}
+              вместо{' '}
+              <span className="whitespace-nowrap font-semibold text-amber-200/70 line-through">9 900 ₸</span>!
+            </p>
           </div>
           <ul className="mt-4 space-y-2.5">
             {PREMIUM_PLAN.features.map((feature) => (

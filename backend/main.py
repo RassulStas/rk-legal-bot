@@ -1280,7 +1280,7 @@ async def telegram_webhook(
 #   ROBOKASSA_PASSWORD_2     verification key for ResultURL notifications
 #   PAYMENT_WEBHOOK_SECRET   HMAC-SHA256 key for JSON callbacks (signed header
 #                            X-Payment-Signature = hex hmac-sha256(raw body))
-#   PREMIUM_PRICE            expected payment amount in tenge (default 9900;
+#   PREMIUM_PRICE            expected payment amount in tenge (default 4900;
 #                            0 disables the amount floor)
 #   ROBOKASSA_PAY_URL        payment form origin (default: Robokassa KZ)
 # Until the matching secret is set the endpoint answers 503, so a deployment
@@ -1295,7 +1295,7 @@ def _payment_secret(name: str) -> str:
 
 
 def _premium_price() -> float:
-    raw = os.environ.get("PREMIUM_PRICE", "9900").strip() or "9900"
+    raw = os.environ.get("PREMIUM_PRICE", "4900").strip() or "4900"
     try:
         return float(raw)
     except ValueError:
@@ -1538,7 +1538,7 @@ async def premium_payment_link(session_id: str = "") -> dict[str, object]:
     if status == "active":
         raise HTTPException(status_code=409, detail="claim already active")
     price = _premium_price()
-    out_sum = f"{price if price > 0 else 9900.0:.2f}"
+    out_sum = f"{price if price > 0 else 4900.0:.2f}"
     inv_id = str(claim_id)
     signature = hashlib.md5(
         f"{merchant}:{out_sum}:{inv_id}:{password1}".encode("utf-8")

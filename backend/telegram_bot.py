@@ -113,7 +113,7 @@ async def send_claim_notification(claim_id: int, user_phone: str) -> int | None:
         "💰 ПОСТУПИЛА ОПЛАТА PREMIUM!\n"
         f"ID Заявки: #{claim_id}\n"
         f"Профиль пользователя: {user_phone}\n"
-        "Тариф: 9,900 ₸ / мес\n\n"
+        "Тариф: 4 900 ₸ / мес\n\n"
         "Проверьте Kaspi Gold и выберите действие:"
     )
     reply_markup = {
