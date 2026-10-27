@@ -1240,12 +1240,12 @@ async def _platform_stats() -> dict[str, int]:
     async with AsyncSessionLocal() as db:
         users = await db.scalar(select(func.count()).select_from(User))
         documents = await db.scalar(select(func.count()).select_from(UserDocument))
-        pending = await db.scalar(
+        claims = await db.scalar(
             select(func.count())
             .select_from(PremiumClaim)
-            .where(PremiumClaim.status == "pending")
+            .where(PremiumClaim.status.in_(("pending", "active")))
         )
-    return {"users": users or 0, "documents": documents or 0, "pending": pending or 0}
+    return {"users": users or 0, "documents": documents or 0, "claims": claims or 0}
 
 
 def _status_text(stats: dict[str, int]) -> str:
@@ -1254,7 +1254,7 @@ def _status_text(stats: dict[str, int]) -> str:
         "📊 Статистика платформы:\n"
         f"• Всего пользователей в базе: {stats['users']}\n"
         f"• Загружено договоров на аудит: {stats['documents']}\n"
-        f"• Горячих заявок на проверке: {stats['pending']}\n"
+        f"• Горячих заявок на проверке: {stats['claims']}\n"
         "\n"
         "Система RAG и пульт P2P-одобрений работают в штатном режиме 24/7."
     )
