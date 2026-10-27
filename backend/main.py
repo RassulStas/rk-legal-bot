@@ -1235,6 +1235,31 @@ STATUS_REPLY_TEXT = os.environ.get(
 )
 
 
+async def _platform_stats() -> dict[str, int]:
+    """Live counters for the owner /status card, straight from chat.db."""
+    async with AsyncSessionLocal() as db:
+        users = await db.scalar(select(func.count()).select_from(User))
+        documents = await db.scalar(select(func.count()).select_from(UserDocument))
+        pending = await db.scalar(
+            select(func.count())
+            .select_from(PremiumClaim)
+            .where(PremiumClaim.status == "pending")
+        )
+    return {"users": users or 0, "documents": documents or 0, "pending": pending or 0}
+
+
+def _status_text(stats: dict[str, int]) -> str:
+    return (
+        "🚀 Сервер SmartLawyer.kz активен!\n"
+        "📊 Статистика платформы:\n"
+        f"• Всего пользователей в базе: {stats['users']}\n"
+        f"• Загружено договоров на аудит: {stats['documents']}\n"
+        f"• Горячих заявок на проверке: {stats['pending']}\n"
+        "\n"
+        "Система RAG и пульт P2P-одобрений работают в штатном режиме 24/7."
+    )
+
+
 async def _handle_bot_message(message: dict) -> None:
     # Telegram appends "@botname" to commands used in groups.
     text = str(message.get("text") or "").strip()
@@ -1244,7 +1269,14 @@ async def _handle_bot_message(message: dict) -> None:
     if not telegram_bot.is_owner(chat.get("id")):
         logger.warning("Telegram: ignoring /status from unauthorized chat %s", chat.get("id"))
         return
-    await telegram_bot.send_message(chat.get("id"), STATUS_REPLY_TEXT)
+    try:
+        stats = await _platform_stats()
+    except Exception:
+        # The owner still needs an answer when the database is unreachable.
+        logger.exception("Telegram: /status stats query failed")
+        await telegram_bot.send_message(chat.get("id"), STATUS_REPLY_TEXT)
+        return
+    await telegram_bot.send_message(chat.get("id"), _status_text(stats))
 
 
 @app.post("/api/telegram/webhook")
